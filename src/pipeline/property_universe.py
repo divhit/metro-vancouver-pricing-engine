@@ -427,8 +427,8 @@ class PropertyUniverseBuilder:
         Returns:
             PropertyType value string (e.g. "condo", "detached").
         """
-        zoning = (zoning_code or "").strip().upper()
-        legal = (legal_type or "").strip().upper()
+        zoning = str(zoning_code).strip().upper() if pd.notna(zoning_code) else ""
+        legal = str(legal_type).strip().upper() if pd.notna(legal_type) else ""
 
         # --- Industrial / heavy commercial → DEVELOPMENT_LAND ---
         for prefix in _INDUSTRIAL_PREFIXES:

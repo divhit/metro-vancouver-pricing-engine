@@ -264,6 +264,24 @@ class PropertyPredictor:
                     features_df[feat] = np.nan
             features_df = features_df[model_feature_names]
 
+            # Ensure categorical columns match training dtype exactly.
+            # LightGBM stores the category lists used during training in
+            # model.pandas_categorical. We must reconstruct the same
+            # Categorical dtype for prediction.
+            pandas_cats = model.pandas_categorical
+            if pandas_cats:
+                cat_col_idx = 0
+                for col in features_df.columns:
+                    if pd.api.types.is_string_dtype(features_df[col]):
+                        if cat_col_idx < len(pandas_cats):
+                            cat_type = pd.CategoricalDtype(
+                                categories=pandas_cats[cat_col_idx],
+                            )
+                            features_df[col] = features_df[col].astype(cat_type)
+                            cat_col_idx += 1
+                        else:
+                            features_df[col] = features_df[col].astype("category")
+
             # Point estimate: exp(model.predict(features))
             log_pred = model.predict(features_df)
             ml_estimate = float(np.expm1(log_pred[0]))

@@ -166,6 +166,11 @@ class SubRegionEngine:
             ", ".join(cluster_features),
         )
 
+        # Pre-initialize the column as object dtype so string labels can be assigned
+        df["micro_neighborhood"] = pd.Series(
+            [None] * len(df), index=df.index, dtype="object",
+        )
+
         areas_processed = 0
         areas_skipped = 0
 

@@ -39,9 +39,43 @@ from src.api.schemas import (
     ShapFeature,
 )
 from src.models.predictor import PropertyPredictor
-from src.pipeline.property_universe import VANCOUVER_LOCAL_AREAS
 
 logger = logging.getLogger(__name__)
+
+# Mapping of Vancouver neighbourhood numeric codes to human-readable names.
+# Based on the City of Vancouver Property Tax Report neighbourhood_code field.
+NEIGHBOURHOOD_CODE_NAMES: dict[str, str] = {
+    "1": "West Point Grey",
+    "2": "Kitsilano",
+    "3": "Dunbar-Southlands",
+    "4": "Arbutus Ridge",
+    "5": "Kerrisdale",
+    "6": "Shaughnessy",
+    "7": "Fairview",
+    "8": "South Cambie",
+    "9": "Oakridge",
+    "10": "Marpole",
+    "11": "Riley Park",
+    "12": "Sunset",
+    "13": "Mount Pleasant",
+    "14": "Grandview-Woodland",
+    "15": "Hastings-Sunrise",
+    "16": "Kensington-Cedar Cottage",
+    "17": "Killarney",
+    "18": "Victoria-Fraserview",
+    "19": "South Vancouver",
+    "20": "Strathcona",
+    "21": "Hastings East",
+    "22": "Renfrew Heights",
+    "23": "Renfrew-Collingwood",
+    "24": "Collingwood",
+    "25": "Champlain Heights",
+    "26": "Downtown",
+    "27": "West End",
+    "28": "Coal Harbour",
+    "29": "Yaletown",
+    "30": "Downtown South",
+}
 
 # ============================================================
 # GLOBAL STATE
@@ -242,7 +276,7 @@ async def get_property(pid: str) -> PropertyDetail:
         pid=str(row.get("pid", "")),
         address=str(row.get("full_address", row.get("address", ""))),
         neighbourhood_code=neighbourhood_code,
-        neighbourhood_name=VANCOUVER_LOCAL_AREAS.get(
+        neighbourhood_name=NEIGHBOURHOOD_CODE_NAMES.get(
             neighbourhood_code, neighbourhood_code.replace("-", " ").title(),
         ),
         property_type=str(row.get("property_type", "")),
@@ -279,7 +313,7 @@ async def get_all_market_summaries() -> list[MarketSummary]:
         )
 
     summaries = []
-    for area_code in sorted(VANCOUVER_LOCAL_AREAS.keys()):
+    for area_code in sorted(NEIGHBOURHOOD_CODE_NAMES.keys()):
         summary = _compute_market_summary(area_code)
         if summary is not None:
             summaries.append(summary)
@@ -309,12 +343,12 @@ async def get_market_summary(neighbourhood_code: str) -> MarketSummary:
     # Normalize the code to uppercase
     code = neighbourhood_code.upper()
 
-    if code not in VANCOUVER_LOCAL_AREAS:
+    if code not in NEIGHBOURHOOD_CODE_NAMES:
         raise HTTPException(
             status_code=404,
             detail=(
                 f"Neighbourhood '{neighbourhood_code}' not found. "
-                f"Valid codes: {sorted(VANCOUVER_LOCAL_AREAS.keys())}"
+                f"Valid codes: {sorted(NEIGHBOURHOOD_CODE_NAMES.keys())}"
             ),
         )
 
@@ -337,7 +371,7 @@ async def get_neighbourhoods() -> list[dict[str, str]]:
     """
     return [
         {"code": code, "name": name}
-        for code, name in sorted(VANCOUVER_LOCAL_AREAS.items())
+        for code, name in sorted(NEIGHBOURHOOD_CODE_NAMES.items())
     ]
 
 
@@ -452,7 +486,7 @@ def _compute_market_summary(area_code: str) -> Optional[MarketSummary]:
 
     return MarketSummary(
         neighbourhood_code=area_code,
-        neighbourhood_name=VANCOUVER_LOCAL_AREAS.get(
+        neighbourhood_name=NEIGHBOURHOOD_CODE_NAMES.get(
             area_code, area_code.replace("-", " ").title(),
         ),
         property_counts=property_counts,

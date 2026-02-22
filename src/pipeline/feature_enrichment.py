@@ -281,7 +281,12 @@ class FeatureEnrichmentPipeline:
                 "No latitude/longitude columns found. "
                 "Creating GeoDataFrame with null geometries."
             )
-            gdf = gpd.GeoDataFrame(df, geometry=None, crs="EPSG:4326")
+            from shapely.geometry import Point
+
+            null_geom = gpd.GeoSeries(
+                [None] * len(df), index=df.index, crs="EPSG:4326",
+            )
+            gdf = gpd.GeoDataFrame(df, geometry=null_geom)
             return gdf
 
         # Create point geometries

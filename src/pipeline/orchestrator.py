@@ -129,7 +129,7 @@ class DataOrchestrator:
 
         try:
             universe_builder = PropertyUniverseBuilder(
-                data_dir=str(self.data_dir),
+                cache_dir=str(self.data_dir / "raw"),
             )
             properties_df = universe_builder.build_universe(year=assessment_year)
 
@@ -480,7 +480,7 @@ class DataOrchestrator:
 
         # 1. Build property universe
         universe_builder = PropertyUniverseBuilder(
-            data_dir=str(self.data_dir),
+            cache_dir=str(self.data_dir / "raw"),
         )
         properties_df = universe_builder.build_universe(year=assessment_year)
         logger.info(

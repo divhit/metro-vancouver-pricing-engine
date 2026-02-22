@@ -405,12 +405,9 @@ class FeatureBuilder:
             ]
             choices = ["New", "Recent", "Mature", "Older", "Heritage"]
             df["building_age_bucket"] = np.select(
-                conditions, choices, default=np.nan
+                conditions, choices, default="Unknown"
             )
-            # Replace the numpy nan string with actual NaN
-            df["building_age_bucket"] = df["building_age_bucket"].replace(
-                "nan", np.nan
-            )
+            df.loc[df["effective_age"].isna(), "building_age_bucket"] = np.nan
 
         # --- Value per lot sqft ---
         if "total_assessed_value" in df.columns and "lot_size_sqft" in df.columns:
