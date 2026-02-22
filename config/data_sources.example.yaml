@@ -1,0 +1,324 @@
+# Metro Vancouver Pricing Engine — Data Source Registry
+# Copy to data_sources.yaml and fill in credentials
+
+# ============================================================
+# TIER 1 — Essential Sources
+# ============================================================
+
+mls:
+  provider: "GVR BridgeAPI (RESO Web API)"
+  description: "MLS listing and sold data for Metro Vancouver + Fraser Valley + Chilliwack"
+  endpoints:
+    idx: "https://api.bridgedataoutput.com/api/v2/OData/gvr_idx/"
+    vow: "https://api.bridgedataoutput.com/api/v2/OData/gvr_vow/"
+    standard: "https://api.bridgedataoutput.com/api/v2/OData/gvr/"
+  auth:
+    api_key: ""  # From BridgeAPI after GVR compliance review
+    # Requires: Valid BC real estate license + GVR membership
+    # IDX agreement: idx@gvrealtors.ca
+    # VOW agreement: separate, ~$1,500/year
+  update_frequency: "real-time (15min-1hr refresh)"
+  data_format: "JSON (RESO Data Dictionary)"
+  priority: "CRITICAL"
+
+bc_assessment:
+  provider: "BC Assessment Authority"
+  description: "Property characteristics, assessed values, sales for all BC properties"
+  products:
+    data_advice:
+      tables:
+        - "bca_folio_descriptions"
+        - "bca_folio_addresses"
+        - "bca_folio_legal_descriptions"
+        - "bca_folio_gnrl_prop_values"
+        - "bca_folio_sales"
+        - "ownership_jurisdictions"
+      join_key: "FOLIO_ID"
+      format: "CSV (6 tables) + XML"
+    residential_inventory:
+      description: "Bedrooms, bathrooms, finished area, basement, quality grade"
+      update: "quarterly"
+    commercial_inventory:
+      description: "Floor area, construction type, year built, floors"
+      update: "quarterly"
+    permit_export:
+      description: "Building permits linked to folios"
+      update: "monthly"
+  contact: "propertyinfo@bcassessment.ca | 1-866-825-8322"
+  update_frequency: "Annual full roll (Jan/Apr) + weekly CSV + weekly XML deltas"
+  cost: "Commercial license — contact for pricing"
+  priority: "CRITICAL"
+
+bc_assessment_academic:
+  provider: "UBC Abacus Repository"
+  description: "Same BCA data for academic research"
+  r_package: "abacusBCA"
+  env_vars:
+    ABACUS_API_TOKEN: ""
+    ABACUS_CACHE_PATH: ""
+  access: "Restricted — UBC/SFU/UNBC/UVic affiliates only"
+  contact: "jeremy.buhler@ubc.ca"
+
+vancouver_open_data:
+  provider: "City of Vancouver"
+  base_url: "https://opendata.vancouver.ca/api/v2/"
+  datasets:
+    property_tax: "property-tax-report"
+    zoning: "zoning-districts-and-labels"
+    building_permits: "issued-building-permits"
+    parcel_polygons: "property-parcel-polygons"
+    heritage: "heritage-sites"
+    floodplain: "designated-floodplain"
+    school_catchments_elementary: "elementary-school-catchment-areas"
+    school_catchments_secondary: "secondary-school-catchment-areas"
+    parks: "parks-polygon-representation"
+    local_areas: "local-area-boundary"
+  api_key: ""  # Free registration for larger datasets
+  r_package: "VancouvR"
+  update_frequency: "weekly"
+  cost: "FREE"
+  priority: "HIGH"
+
+translink_gtfs:
+  provider: "TransLink"
+  description: "Transit schedules, stop locations, routes for all Metro Vancouver"
+  developer_portal: "https://developer.translink.ca/"
+  gtfs_static_url: ""  # Download after registration
+  gtfs_realtime: "GTFS-RT V3 (protobuf)"
+  api_key: ""  # Free registration
+  update_frequency: "weekly (static), real-time (RT)"
+  cost: "FREE"
+  priority: "HIGH"
+
+walk_score:
+  provider: "Walk Score"
+  endpoints:
+    score: "https://api.walkscore.com/score"
+    transit: "https://transit.walkscore.com/transit/score/"
+    transit_stops: "https://transit.walkscore.com/transit/stop/search"
+    travel_time: "https://api.walkscore.com/traveltime/"
+  api_key: ""
+  rate_limit: "5,000/day (free tier)"
+  cost: "FREE up to 5K/day"
+  priority: "HIGH"
+
+statistics_canada:
+  provider: "Statistics Canada"
+  endpoints:
+    census_profile: "https://api.statcan.gc.ca/census-recensement/profile/sdmx/rest/"
+    web_data_service: "https://www150.statcan.gc.ca/t1/tbl1/en/dtl!downloadTbl/"
+  r_packages:
+    cancensus:
+      api_key: ""  # Free from CensusMapper.ca
+    cansim: {}  # No key needed
+  key_tables:
+    nhpi: "18-10-0205-01"  # New Housing Price Index
+    bcpi: "18-10-0289-01"  # Building Construction Price Index
+    crime: "35-10-0184-01"  # Incident-based crime
+  cost: "FREE"
+  priority: "HIGH"
+
+cmhc:
+  provider: "Canada Mortgage and Housing Corporation"
+  portal: "https://www03.cmhc-schl.gc.ca/hmip-pimh/en/TableMapChart"
+  r_package: "cmhc"  # mountainMath, no key needed
+  surveys:
+    - "Starts and Completions (monthly, census tract)"
+    - "Rental Market Survey (annual Oct, CMA zones)"
+    - "Secondary Rental Market (annual, CMA)"
+    - "Housing Market Assessment (quarterly, CMA)"
+  cost: "FREE"
+  priority: "HIGH"
+
+parcelmap_bc:
+  provider: "LTSA"
+  description: "2M+ titled parcel polygons for all of BC"
+  open_data_url: "https://catalogue.data.gov.bc.ca/dataset/parcelmap-bc-parcel-fabric"
+  formats: ["Shapefile", "GeoJSON", "KML", "FGDB"]
+  crs: "EPSG:3153 (NAD83 CSRS / BC Albers)"
+  services: ["WMS", "WFS"]
+  cost: "FREE (Open Government Licence - BC)"
+  priority: "HIGH"
+
+bank_of_canada:
+  provider: "Bank of Canada"
+  description: "Policy rate, mortgage rates, bond yields, inflation"
+  base_url: "https://www.bankofcanada.ca/valet/"
+  key_series:
+    five_yr_mortgage: "V80691335"
+    prime_rate: "V80691311"
+    policy_rate: "V39079"
+  auth: "NONE REQUIRED"
+  format: "JSON, CSV, XML"
+  cost: "FREE"
+  priority: "HIGH"
+
+# ============================================================
+# TIER 2 — High Value Sources
+# ============================================================
+
+fraser_institute:
+  provider: "Fraser Institute"
+  url: "https://www.compareschoolrankings.org"
+  description: "School rankings for 1,015+ BC schools, 0-10 scale"
+  access: "Web scraping (no API)"
+  update: "Annual"
+  cost: "FREE"
+
+vpd_crime:
+  provider: "Vancouver Police Department"
+  url: "https://geodash.vpd.ca/opendata/"
+  description: "Geocoded crime incidents 2003-2026, CSV bulk download"
+  update: "Weekly (Sundays)"
+  cost: "FREE"
+
+ltsa:
+  provider: "Land Title and Survey Authority"
+  portal: "https://ltsa.ca"
+  myltsa_url: "https://www.ltsa.ca/myltsa/"
+  fees:
+    title_search: 10.89
+    name_search: 10.89
+    document_order: 17.51
+    state_of_title: 16.50
+    explorer_service_charge: 3.40
+    enterprise_service_charge: 2.10
+  priority: "HIGH"
+
+teranet_hpi:
+  provider: "Teranet / National Bank"
+  url: "https://housepriceindex.ca"
+  description: "Monthly repeat-sales house price index"
+  cost: "FREE (headline index). Enterprise for raw data."
+
+helldata_qualityscore:
+  provider: "HelloData"
+  description: "Photo-based property condition/quality scoring"
+  api_url: "https://api.hellodata.ai/"
+  api_key: ""
+  cost: "$0.01/image"
+  priority: "MEDIUM-HIGH"
+
+openstreetmap:
+  provider: "OpenStreetMap"
+  overpass_endpoint: "https://overpass-api.de/api/interpreter"
+  overpass_turbo: "https://overpass-turbo.eu/"
+  geofabrik_extracts: "https://download.geofabrik.de/north-america/canada/"
+  license: "ODbL"
+  cost: "FREE"
+
+bc_data_catalogue:
+  provider: "Province of BC"
+  base_url: "https://catalogue.data.gov.bc.ca/"
+  datasets:
+    alr_boundaries: "92e17599-ac8a-47c8-877c-107768cb373c"
+    floodplains: "e4061982-fee8-4511-bfd5-0ee57279cd43"
+    contaminated_sites: "environmental-remediation-sites"
+    crown_tenures: "tantalis-crown-tenures"
+    school_districts: ""
+  r_package: "bcdata"
+  cost: "FREE"
+
+# ============================================================
+# TIER 3 — Enhanced Sources
+# ============================================================
+
+local_logic:
+  provider: "Local Logic"
+  description: "18 location scores across 250M+ addresses"
+  api_key: ""
+  cost: "Enterprise pricing"
+
+mapbox:
+  provider: "Mapbox"
+  endpoints:
+    geocoding: "https://api.mapbox.com/geocoding/v5/"
+    isochrone: "https://api.mapbox.com/isochrone/v1/mapbox/"
+  api_key: ""
+  costs:
+    geocoding_temp: "100K free/month, then $0.75/1K"
+    geocoding_perm: "$5/1K"
+    isochrone: "$2/1K"
+
+seismic_microzonation:
+  provider: "Metro Vancouver Seismic Microzonation Project"
+  url: "https://metrovanmicromap.ca/"
+  description: "29 seismic hazard maps, 15,000+ geotechnical data points"
+  cost: "FREE"
+
+nrcan:
+  provider: "Natural Resources Canada"
+  datasets:
+    hrdem: "High Resolution DEM (1-2m LiDAR)"
+    building_footprints: "13.6M nationwide building footprints"
+    flood_mapping: "National flood prediction maps"
+  cost: "FREE"
+
+crt_strata:
+  provider: "Civil Resolution Tribunal"
+  url: "https://decisions.civilresolutionbc.ca/"
+  description: "Strata dispute decisions — searchable by strata plan number"
+  cost: "FREE"
+
+suburban_open_data:
+  burnaby: "https://data.burnaby.ca/"
+  surrey: "https://data.surrey.ca/"
+  richmond: "https://richmond-geo-hub-cor.hub.arcgis.com/"
+  coquitlam: "https://data.coquitlam.ca/"
+  north_vancouver_district: "https://geoweb.dnv.org/data/"
+  west_vancouver: "https://mapping.westvancouver.ca/OD/"
+  new_westminster: "https://opendata.newwestcity.ca/"
+  metro_vancouver: "https://open-data-portal-metrovancouver.hub.arcgis.com/"
+
+# ============================================================
+# TIER 4 — Supplementary
+# ============================================================
+
+houski:
+  provider: "Houski"
+  description: "17M+ Canadian properties, 200+ fields"
+  api_url: "https://api.houski.ca/"
+  api_key: ""
+  cost: "~$0.015/request"
+
+buildify:
+  provider: "Buildify"
+  description: "4,000+ pre-construction projects, 150+ attributes"
+  api_key: ""
+  cost: "Custom pricing"
+
+google_maps:
+  provider: "Google"
+  api_key: ""
+  costs:
+    geocoding: "$5/1K"
+    places_basic: "$5/1K"
+    places_advanced: "$7/1K"
+    distance_matrix: "$5/1K elements"
+    street_view: "$7/1K"
+
+google_earth_engine:
+  provider: "Google"
+  description: "Satellite imagery for vegetation, land use, change detection"
+  cost: "FREE for non-commercial"
+
+altus_group:
+  provider: "Altus Group"
+  description: "Construction cost data, CRE data"
+  cost: "Paid (enterprise)"
+
+conference_board:
+  provider: "Conference Board of Canada"
+  description: "CMA-level 5-year economic forecasts"
+  cost: "Enterprise pricing"
+
+reddit_api:
+  provider: "Reddit"
+  description: "Neighborhood sentiment from r/vancouver etc."
+  cost: "Free (100 QPM with OAuth)"
+
+icbc_crash:
+  provider: "ICBC"
+  url: "https://public.tableau.com/app/profile/icbc"
+  description: "Vehicle crash locations, severity, 5 years"
+  cost: "FREE"
