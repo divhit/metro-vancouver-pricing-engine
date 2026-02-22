@@ -868,3 +868,318 @@ A building with 5+ CRT disputes in the past 3 years likely has governance proble
 
 ### Insight 8: Presale Inventory as Market Cycle Indicator
 Metro Vancouver currently has ~2,500-3,500 unsold new condos, the highest in 24 years. Tracking presale inventory levels (via Buildify or UDI data) and developer incentive packages (flash sales, assignment restrictions loosened) provides a forward-looking market cycle indicator. When developers offer 25% discounts plus closing cost packages, it signals significant market weakness in the condo segment.
+
+---
+---
+
+## Appendix B — Comprehensive Data Source Inventory (Extended Research)
+
+*120+ data sources identified across 15 categories. Sources marked with 💰 require payment — these are deprioritized in favor of free alternatives. Aparna will have MLS data access through her realtor license.*
+
+---
+
+### B1. Strata Data (BC's Biggest Structural Gap)
+
+There is **no centralized database of strata corporations in BC** — the province's 33,955 filed strata plans and 777,919 active strata lots are recorded only at the Land Title Office. Depreciation reports, meeting minutes, bylaws, and special assessments have no bulk access pathway. Each must be ordered per-property. This is the single largest structural data gap in the entire pricing engine.
+
+| Source | URL | Format | Cost | Update Frequency | Relevance | Key Fields |
+|--------|-----|--------|------|------------------|-----------|------------|
+| LTSA Strata Plan Records | https://ltsa.ca/property-owners/how-can-i/find-strata-property-information/ | PDF via myLTSA Enterprise | 💰 $10.89/title search | Real-time upon registration | HIGH | PID, strata plan number, unit entitlement (Form V), bylaws, charges/liens, Section 219 covenants, registered ownership, legal descriptions |
+| eStrataHub (Dye & Durham / APIC) | https://www.estratahub.com/ | PDF delivered electronically | 💰 $30+GST delivery + Strata Property Act fees; Eli Report add-on $40 | On-demand per property manager | HIGH | Form B (financial status, outstanding levies, insurance, legal actions), Form F, meeting minutes, financial statements, bylaws, depreciation reports |
+| Eli Report (OctoAI Technologies) | https://elireport.com/ | AI-generated interactive web reports | 💰 First report free, then $39.99/report or enterprise subscription | On-demand from uploaded docs | HIGH | Rental/pet/smoking/age restrictions, leak history, insurance claims, litigation flags, special levies, CRF balance, depreciation report data, budget benchmarks vs. comparable buildings |
+| StrataReports | https://www.stratareports.ca/ | AI-generated web reports | 💰 Pricing not publicly listed | On-demand from uploaded docs | MEDIUM | Financial analysis, bylaw summaries, engineering report flags |
+| StrataCalc | https://stratacalc.ca/ | Free web calculator | FREE | Static tool | MEDIUM | Estimated monthly strata fees by unit size, average fees by area, per-sqft cost estimates |
+| BCFSA Strata Insurance Market Reports | https://www.bcfsa.ca/public-resources/insurance | Free PDF reports | FREE | Periodic market studies (last: 2020) | MEDIUM | Average premium increases by region, distribution analysis. No per-building premium database exists publicly. Aggregate only: 40% average premium increase province-wide, 50% in Metro Vancouver |
+| BC Assessment Strata Valuation | Via bulk Data Advice (already in stack) | CSV/XML | See Appendix A | Annual + weekly refreshes | HIGH | Habitable area, year built, building type per strata lot, assessed values |
+
+**Key finding:** Depreciation reports are now mandatory every 5 years for stratas with 5+ lots (as of July 1, 2024). Metro Vancouver stratas must have reports by **July 1, 2026**. There is no centralized filing — reports are held by individual strata corporations and accessible only through eStrataHub or property managers.
+
+---
+
+### B2. Environmental and Geotechnical Sources
+
+| Source | URL | Format | Cost | Update Frequency | Relevance | Key Fields |
+|--------|-----|--------|------|------------------|-----------|------------|
+| BC Mapped Floodplains (Historical) | https://catalogue.data.gov.bc.ca/dataset/mapped-floodplains-in-bc-historical | SHP/WMS/KML via DataBC | FREE | Originally mapped 1987-1998; some updated since | HIGH | Floodplain boundary polygons, flood construction levels, 200-year flood extents |
+| City of Vancouver Designated Floodplain | https://opendata.vancouver.ca/explore/dataset/designated-floodplain/ | GeoJSON/SHP/CSV/KML | FREE | Static with periodic updates | HIGH | Present-day 500-year storm (Scenario 1), 2100 with 1m sea level rise (Scenario 3) coastal flood extents, Still Creek floodplain, wave effect zones |
+| ALR Boundary Polygons | https://catalogue.data.gov.bc.ca/dataset/alc-alr-polygons and https://www.alc.gov.bc.ca/alr-maps/ | SHP/WMS via DataBC | FREE | Quarterly (Jan, Apr, Jul, Oct) | HIGH | ALR polygon boundary, inclusion/exclusion status, zone classification. Severely restricts development in Richmond, Delta, Surrey, Langley |
+| BC Site Registry (Contaminated Sites) | Spatial layer free via iMapBC; detailed reports via https://www.bconline.gov.bc.ca/site_reg.html | GIS spatial layer (free) / detailed reports (paid) | FREE (spatial layer); 💰 $15/quarter-hour for detailed reports | Continuously updated | HIGH | Site classification, remediation status, associated PIDs, certificates of compliance. 30,000+ sites across BC |
+| Metro Vancouver Seismic Microzonation (Liquefaction) | https://metrovanmicromap.ca/liquefaction-susceptibility/ | GIS raster/vector maps via Borealis Data Repository | FREE | Research project (2017-2026), 29 maps published | HIGH | Liquefaction Potential Index values, susceptibility class, surficial geology, probabilistic hazard levels. Richmond and Delta show very high liquefaction hazard |
+| BC Wildfire WUI Risk Class Maps | https://www2.gov.bc.ca/gov/content/safety/wildfire-status/prevention/fire-fuel-management/wui-risk-class-maps/wui-downloads | PDF/KML | FREE | Periodic | MEDIUM | WUI risk class (1-5), fire danger class, fire perimeter polygons. Most relevant for North Shore, Anmore, Belcarra, Port Moody. Also: CWFIS at https://cwfis.cfs.nrcan.gc.ca/interactive-map with daily fire danger ratings |
+| Metro Vancouver Tree Canopy Cover | https://open-data-portal-metrovancouver.hub.arcgis.com/ | 5m resolution GIS raster | FREE | Every ~6 years (baseline 2014, updated 2020) | MEDIUM | % canopy cover by area, impervious surface %, coniferous/deciduous classification. Region is 31% canopy (2020), declining |
+| YVR Noise Exposure Maps | https://www.yvr.ca/en/about-yvr/noise-management | Annual PDF reports with NEF contour maps; WebTrak real-time flight tracking | FREE | Annual reports + real-time tracking | HIGH | NEF contour values, annual average noise levels at monitoring terminals, noise event counts. Significantly impacts property values in Richmond, South Vancouver, Delta |
+| Air Quality (AQHI) | https://www.env.gov.bc.ca/epd/bcairquality/data/aqhi-table.html and https://weather.gc.ca/airquality/pages/bcaq-001_e.html | Real-time HTML | FREE | Hourly | MEDIUM | AQHI value (1-10+), PM2.5, O3, NO2 concentrations. Metro Vancouver split into 4 sub-regions |
+| PCIC Climate Projections | https://www.pacificclimate.org/data and https://climatedata.ca/ | NetCDF/CSV (~10km grid) | FREE | CMIP5/CMIP6 scenarios | MEDIUM | Projected temperature, precipitation, climate extremes under multiple emissions scenarios |
+| Environment Canada Weather API (MSC GeoMet) | https://api.weather.gc.ca/ | GeoJSON/CSV/XML via OGC API | FREE (anonymous, no key required) | Historical data back to 1840s | MEDIUM | Hourly/daily temperature, precipitation, wind, humidity, climate normals. Python: `env-canada`; R: `weathercan` |
+| Urban Heat Island Data | No single dedicated Metro Vancouver dataset. Best proxies: CANUE at https://canue.ca/data/ (research access), Metro Vancouver impervious surface raster (free), Landsat thermal via Google Earth Engine (free), Meteoblue hyperlocal at https://www.meteoblue.com/ | Various | FREE (most proxies) | Varies | MEDIUM | Temperature differentials, impervious surface %, 10m hyperlocal resolution maps (Meteoblue) |
+
+---
+
+### B3. Transit Data
+
+| Source | URL | Format | Cost | Update Frequency | Relevance | Key Fields |
+|--------|-----|--------|------|------------------|-----------|------------|
+| TransLink GTFS Static | https://www.translink.ca/about-us/doing-business-with-translink/app-developer-resources/gtfs/gtfs-data | GTFS ZIP (CSV files) | FREE (no API key) | Weekly | HIGH | stop_id, stop_name, stop_lat, stop_lon, route_id, route_type, trip_id, arrival/departure times. All 8,000+ bus stops and all SkyTrain stations region-wide |
+| TransLink GTFS-Realtime | https://www.translink.ca/about-us/doing-business-with-translink/app-developer-resources/gtfs/gtfs-realtime | Protocol Buffers | FREE (requires API key at https://developer.translink.ca/) | Real-time | LOW-MEDIUM | Trip Updates, Vehicle Positions, Service Alerts. Useful for reliability metrics |
+| TransLink RTDS (Regional Traffic Data System) | https://developer.translink.ca/ | REST API (JSON/XML) | FREE (API key) | Near-real-time | MEDIUM | Road segment, average speed, travel time, congestion level |
+| SkyTrain Station Locations | https://opendata.vancouver.ca/explore/dataset/rapid-transit-stations/ (Vancouver only); full Metro from GTFS stops.txt; community GeoJSON at https://github.com/carsonyl/translink-derived-datasets | GeoJSON/CSV/SHP | FREE | Periodic | HIGH | Station name, latitude/longitude, line. SkyTrain proximity is one of the strongest transit-related property value predictors |
+| City of Vancouver Bikeways | https://opendata.vancouver.ca/explore/dataset/bikeways/ | GeoJSON/SHP/CSV | FREE | Periodic | MEDIUM | Bikeway type (separated, painted, shared, off-street), AAA designation, street name, geometry |
+| Google Maps Distance Matrix API | https://developers.google.com/maps/documentation/distance-matrix/overview | REST API (JSON) | 💰 $5/1,000 elements (basic); 10,000 free events/month | Real-time | HIGH | Commute times to major employment centers. Consider TravelTime as a fixed-cost alternative for batch processing |
+| BC Transit GTFS | https://www.bctransit.com/open-data/ | GTFS ZIP per system | FREE | Periodic | MEDIUM | Covers Abbotsford-Mission, Chilliwack, Squamish, 40+ other BC communities. Relevant if engine extends to Fraser Valley |
+| ICBC Crash Data | https://www.icbc.com/about-icbc/newsroom/Statistics | CSV, Tableau visualizations | FREE (Open Data Licence) | Biannually | LOW-MEDIUM | Crash location, severity, type, municipality |
+
+---
+
+### B4. School Catchment Boundaries (Critical Gap)
+
+**School catchment boundary GIS data is the single most fragmented data category in the entire inventory.** No centralized source exists for Metro Vancouver. Assembly requires contacting individual school districts or reverse-engineering from mybaragar.com locators.
+
+| Source | URL | Format | Cost | Update Frequency | Relevance | Key Fields |
+|--------|-----|--------|------|------------------|-----------|------------|
+| Fraser Institute School Rankings | https://www.compareschoolrankings.org (web app); annual PDFs from https://www.fraserinstitute.org/ | Web application with encrypted JS API; no official bulk download or API | FREE | Annual | HIGH | School name, overall rating (/10), provincial rank, 5-year trend, FSA results. 2025 BC Elementary report ranks 1,015 schools. Recommendation: build proprietary scores from FSA data below |
+| BC Foundation Skills Assessment (FSA) | https://catalogue.data.gov.bc.ca/dataset/bc-schools-foundation-skills-assessment-fsa- | CSV/XLSX | FREE (Open Government Licence) | Annual | HIGH | school_year, school_number, district_number, FSA skill code (Numeracy/Literacy), grade (4/7), score levels (Emerging/On Track/Extending), participation rates. Data back to 2007/2008. This is the raw data behind Fraser Institute rankings |
+| BC Schools K-12 Locations | https://catalogue.data.gov.bc.ca/dataset/bc-schools-k-12-with-francophone-indicators | CSV with lat/lon, KML, WMS | FREE | Annual (last: Dec 2025) | HIGH | school_name, school_number, school_type, latitude/longitude, school_category (Public/Independent), French programs. Authoritative dataset for all K-12 school locations in BC |
+| BC Child Care Map Data | https://catalogue.data.gov.bc.ca/dataset/child-care-map-data | CSV with lat/lon, KML, WMS | FREE | Daily (nightly auto-sync) | MEDIUM-HIGH | facility_name, address, latitude/longitude, license_type, vacancy status, hours. ~4,000 licensed facilities. One of only three Canadian child-care maps showing vacancy status |
+| BC Schools Enrollment and Completion | https://catalogue.data.gov.bc.ca/dataset/bc-schools-student-enrolment-and-fte-by-grade and https://catalogue.data.gov.bc.ca/dataset/bc-schools-six-year-completion-rate | CSV/XLSX | FREE | Annual | MEDIUM | Enrollment by grade and school, FTE counts, completion rates by district |
+| Post-Secondary Institutions | https://catalogue.data.gov.bc.ca/dataset/locations-of-b-c-post-secondary-institutions | CSV with lat/lon | FREE | Periodic | MEDIUM | Institution locations. Proximity to UBC, SFU, BCIT affects property values |
+
+**School Catchment Boundary Gap Analysis — Current state by district:**
+
+| District | Source | Format | Availability |
+|----------|--------|--------|-------------|
+| Vancouver (SD39) | PDF maps at media.vsb.bc.ca; locator at mybaragar.com (DistrictCode=BC39) | PDF / web locator | No GIS download |
+| Surrey (SD36) | PDF boundary map; locator at mybaragar.com (DistrictCode=BC36) | PDF / web locator | No GIS download |
+| Burnaby (SD41) | Locator at mybaragar.com (DistrictCode=BC41) | Web locator | No GIS download |
+| North Vancouver (SD44) | https://geoweb.dnv.org/data/ | **Shapefile available** | Only Metro Van district with downloadable GIS catchments |
+| Coquitlam (SD43) | mybaragar.com locator | Web locator | No GIS download |
+| Richmond | mybaragar.com locator | Web locator | No GIS download |
+| West Vancouver | mybaragar.com locator | Web locator | No GIS download |
+
+**Recommended approach:** Contact each district for boundary data, or reverse-engineer from mybaragar.com school locators programmatically. North Vancouver (SD44) is the template for what other districts should provide.
+
+---
+
+### B5. Census and Demographics
+
+| Source | URL | Format | Cost | Update Frequency | Relevance | Key Fields |
+|--------|-----|--------|------|------------------|-----------|------------|
+| StatCan Census Profile API (SDMX) | https://api.statcan.gc.ca/census-recensement/profile/sdmx/rest/ | REST API returning CSV/JSON/XML | FREE (no API key) | Census cycle (next: 2026) | HIGH | 2,600+ census variables at dissemination area level for Vancouver CMA: population, age, income, housing, language, immigration, education, commuting. Uses DGUID for geography coding |
+| StatCan Web Data Service (WDS) | https://www150.statcan.gc.ca/t1/wds/rest/ | REST API (JSON) | FREE | Daily at 8:30 AM ET | HIGH | All StatCan data tables including income, housing, demographics. Rate limit: 50 req/sec |
+| Census Profile Bulk Downloads | https://www12.statcan.gc.ca/census-recensement/2021/dp-pd/prof/details/download-telecharger.cfm | CSV | FREE | Census cycle | HIGH | Complete 2021 Census profiles for all geographies including dissemination areas and census tracts |
+| Household Income by Census Tract | Table 98-10-0058-01 at https://www150.statcan.gc.ca/t1/tbl1/en/tv.action?pid=9810005801 | CSV/API | FREE | Census cycle | HIGH | Median/average household income, income distributions by household type |
+| Census Boundary Files (GIS) | https://www12.statcan.gc.ca/census-recensement/2021/geo/sip-pis/boundary-limites/index2021-eng.cfm | Shapefile/FGDB | FREE | Census cycle | HIGH | 57,936 dissemination areas nationally with DGUID linking to census data |
+| CensusMapper / cancensus R Package | https://censusmapper.ca/ (API) and https://mountainmath.github.io/cancensus/ (R package) | R package with spatial geometry | FREE (API key) | Census cycle (1996-2021) | HIGH | Programmatic access to all census data with spatial geometry included. Also includes CMHC taxfiler data at census tract level (2000-2018) |
+| BC Stats Population Projections | https://bcstats.shinyapps.io/popApp/ | Interactive Shiny app, CSV downloads | FREE | Annual | HIGH | Municipal-level population estimates and projections to 2046 for all Metro Vancouver municipalities. Population by age/sex, growth rates |
+| BC Stats Household Projections | https://bcstats.shinyapps.io/hsdProjApp/ | CSV, interactive app | FREE | Annual | HIGH | Household counts, average size, projections by municipality. Critical for housing demand modeling |
+| IRCC Permanent Residents Monthly | https://open.canada.ca/data/en/dataset/f7e5498e-0ad8-4417-85c9-9b8aff9b9eda | XLSX/CSV | FREE | Monthly | HIGH | Permanent residents by CMA (Vancouver available), immigration category, country of citizenship, age group |
+| Postal Code Conversion File (PCCF) | Available via university Data Liberation Initiative or StatCan license | Linkage file | FREE via DLI; 💰 paid otherwise | Census cycle | HIGH | Links 6-digit postal codes to DAs, CTs, and all census geographies with lat/lon coordinates. Essential for geocoding |
+| 💰 Environics Analytics DemoStats | https://environicsanalytics.com/en-ca/data/demographic/demostats | CSV/database | 💰 $10K-$100K+/year | Annual | HIGH (but deprioritized — use StatCan free data instead) | Current-year demographic estimates + 3/5/10-year projections at postal code and DA level. 734+ variables. Premium option for inter-censal estimates |
+
+---
+
+### B6. Municipal Data Portals (Tiered)
+
+Municipal open data quality varies dramatically across Metro Vancouver. Each municipality has different formats, portals, and levels of accessibility.
+
+**Tier 1 — Comprehensive downloadable datasets:**
+
+| Municipality | URL | Format | Cost | Key Datasets | Relevance |
+|-------------|-----|--------|------|-------------|-----------|
+| City of Surrey | https://data.surrey.ca/ | CKAN-based portal; CSV, KML, GeoJSON, GeoTIFF | FREE | 179,000+ assessed parcels with ownership type, zoning, valuation bands; building permits, dev applications, land use, aerial imagery. API available. 750GB+ bulk data on request (gis@surrey.ca) | HIGH |
+| District of North Vancouver | https://geoweb.dnv.org/data/ | SHP/FGDB/DWG/KML | FREE | 170+ datasets: building footprints with stories/type/population, property legal descriptions (PID, folio), school catchments, geological data. Most comprehensive municipal GIS in the region. Auto-refreshed weekly | HIGH |
+| City of Burnaby | https://data.burnaby.ca/ | ArcGIS Hub; GIS formats | FREE | Zoning polygons, property boundaries, building footprints, LiDAR, terrain models, 3D DEMs, development tracker, parks, aerial photos | HIGH |
+| City of New Westminster | https://opendata.newwestcity.ca/ | Various | FREE | Zoning, property info, building permits, permit history, land use, heritage sites, infrastructure. CityViews Map interactive tool | MEDIUM-HIGH |
+| City of Port Coquitlam | https://data-poco.hub.arcgis.com/ | ArcGIS Hub | FREE | Property info, zoning, permits, GIS layers | MEDIUM |
+
+**Tier 2 — Interactive maps with limited bulk download:**
+
+| Municipality | URL | Format | Cost | Key Datasets | Relevance |
+|-------------|-----|--------|------|-------------|-----------|
+| City of Richmond | https://richmond-geo-hub-cor.hub.arcgis.com/ and https://maps.richmond.ca/ | ArcGIS-based; 100+ GIS layers | FREE | Flood plain maps, zoning, parcel polygons. Richmond Interactive Map (RIM) for property lookup. No traditional CKAN catalogue | MEDIUM-HIGH |
+| City of Coquitlam | https://www.coquitlam.ca/qthemap | QtheMap interactive | FREE | Zoning, property boundaries, development permits. 120+ datasets | MEDIUM |
+| Township of Langley | https://www.tol.ca/services/maps-gis/geosource/ | GeoSource interactive | FREE | Zoning, ALR boundaries, property data | MEDIUM |
+| Corporation of Delta | DeltaMap | Interactive map | FREE | Zoning, ALR boundaries, property data | MEDIUM |
+
+**Tier 3 — Basic interactive maps only:**
+
+| Municipality | Portal Name | Cost | Notes |
+|-------------|-------------|------|-------|
+| City of North Vancouver | CityMAP | FREE | Basic property lookup |
+| District of West Vancouver | WestMap | FREE | Zoning maps, property data |
+| City of Maple Ridge | RidgeView | FREE | Basic interactive map |
+| City of Port Moody | ViewPort | FREE | Basic interactive map |
+| City of Pitt Meadows | Mapview | FREE | Basic interactive map |
+| City of White Rock | WROMS | FREE | Basic interactive map |
+| City of Langley | Various | FREE | Basic interactive map |
+
+**Metro Vancouver Regional:** https://open-data-portal-metrovancouver.hub.arcgis.com/ — FREE. Includes: Regional Land Use Designations (Metro 2050), municipal boundaries, Housing Data Book (comprehensive 6-part report, 2025 edition at https://metrovancouver.org/services/regional-planning/Documents/metro-vancouver-housing-data-book-2025.pdf), LiDAR 2022, 7.5cm pixel ortho imagery, watershed boundaries.
+
+---
+
+### B7. Rental Market Data
+
+| Source | URL | Format | Cost | Update Frequency | Relevance | Key Fields |
+|--------|-----|--------|------|------------------|-----------|------------|
+| CMHC Rental Market Survey | https://www03.cmhc-schl.gc.ca/hmip-pimh/ | Excel/interactive portal | FREE | Annual (October survey) | CRITICAL | Sub-metro zone-level data for ~25 survey zones within Vancouver CMA (West End, Downtown, Kitsilano, Marpole, Metrotown, etc.): vacancy rates, average rents, turnover rates, universe counts by bedroom type and building age |
+| CMHC Condominium Apartment Survey | Same portal, tables 4.x.x series | Excel/interactive portal | FREE | Annual | HIGH | Vacancy rate, average rent, universe count for rental condos by zone |
+| Inside Airbnb Vancouver | https://insideairbnb.com/get-the-data/ | CSV (gzipped) | FREE (CC-BY 4.0) | Quarterly scrapes | HIGH | 106 attributes per listing: listing_id, neighbourhood, room_type, price, availability, reviews, amenities, host details |
+| 💰 AirDNA MarketMinder | https://www.airdna.co/ | Web dashboard + API (JSON) | 💰 Pro: $50/mo (annual) or $125-170/mo; API custom-priced | Monthly | HIGH (but deprioritized — use Inside Airbnb free data instead) | ADR, occupancy rates, revenue, RevPAR, property-level performance |
+| City of Vancouver STR Licenses | https://opendata.vancouver.ca/explore/dataset/business-licences/ (filter by "Short-Term Rental") | CSV/JSON/API | FREE | Daily extracts | HIGH | Licence number, address, status, geolocation |
+| BC Provincial STR Registry | https://www2.gov.bc.ca/gov/content/housing-tenancy/short-term-rentals/registry | Web registry | 💰 $100/yr (on-site host) or $450/yr (off-site); bulk data access for researchers TBD | Launched Jan 2025, mandatory by May 2025 | MEDIUM | Registration data. Bulk data access for researchers is TBD |
+| BC RTB Rent Increase Data | https://www2.gov.bc.ca/gov/content/housing-tenancy/residential-tenancies/rent-rtb/rent-increases | Web page | FREE | Annual | HIGH | Annual allowable rent increase: 2025: 3.0%; 2026: 2.3%. Tied to BC CPI. Critical for modeling rent growth constraints |
+| Rentals.ca | https://rentals.ca | No public API; data licensing via partnership only (giacomo.ladas@rentals.ca) | 💰 Partnership pricing | Ongoing | HIGH (but deprioritized — no free access) | Partnership with Statistics Canada for upcoming Rental Market Industry Index |
+| Zumper/PadMapper | https://www.zumper.com | Data licensing available (datalicensing@zumper.com) | 💰 Licensing pricing | Monthly Canadian rent reports at https://blog.padmapper.com | MEDIUM-HIGH (but deprioritized — no free access) | Monthly rent reports by city |
+| Liv.rent | https://liv.rent | No public API or data licensing | 💰 No free access | Occasional blog rent reports | MEDIUM (deprioritized) | Popular in Vancouver market but no data pipeline |
+
+---
+
+### B8. Financial and Mortgage Data
+
+| Source | URL | Format | Cost | Update Frequency | Relevance | Key Fields |
+|--------|-----|--------|------|------------------|-----------|------------|
+| Bank of Canada Valet API | https://www.bankofcanada.ca/valet/ | JSON/CSV/XML | FREE (no registration, no API key) | Daily | CRITICAL | Policy interest rate, posted mortgage rates from 6 major banks, prime lending rate, GoC bond yields, treasury bill rates, CPI/inflation, CORRA. Python: `pyvalet`; R: `valet`. Key series: V80691335 (5-yr mortgage), V80691311 (prime rate). **Should be first financial data integration** |
+| BC Property Transfer Tax Data | https://catalogue.data.gov.bc.ca/ and https://open.canada.ca/data/ | CSV/XLSX | FREE (Open Government Licence) | Weekly and monthly | CRITICAL | Transaction counts, fair market values, property types, foreign buyer involvement, municipality breakdowns, citizenship/residency data (from 2016+). **Likely missing from current stack — exceptionally valuable** |
+| Teranet-National Bank House Price Index | https://housepriceindex.ca | Monthly PDF reports (free); raw data/sub-indices (paid) | FREE (headline index); 💰 enterprise licensing for raw data | Monthly | CRITICAL | Monthly composite index, Vancouver CMA index, month/year-over-year changes. Canada's only repeat-sales home price index. Neighbourhood sub-indices available under licensing |
+| CMHC Residential Mortgage Industry Dashboard | https://www.cmhc-schl.gc.ca/professionals/housing-markets-data-and-research/housing-data/residential-mortgage-industry-data-dashboard | Excel/dashboard | FREE | Quarterly | HIGH | Mortgage originations, outstanding balances, arrears rates (30/60/90+ days), LTV distributions, insured vs. uninsured breakdown, by province |
+| CREA MLS Home Price Index | https://www.crea.ca/housing-market-stats/mls-home-price-index/hpi-tool/ | Excel download (free); DDF API requires REALTOR membership | FREE (public index) | Monthly | HIGH | Composite benchmark, single-family/townhouse/apartment benchmarks by market area |
+| National Bank Housing Affordability Monitor | https://www.nbc.ca/content/dam/bnc/taux-analyses/analyse-eco/logement/housing-affordability.pdf | Free PDF | FREE | Quarterly | MEDIUM-HIGH | MPPI (mortgage payment as % of income), months to save for down payment, qualifying income, for condos and non-condos in 10 CMAs |
+| RBC Housing Affordability | https://www.rbc.com/en/economics/canadian-analysis/canadian-housing/housing-affordability/ | Free PDF | FREE | Quarterly (since 1985) | MEDIUM-HIGH | Ownership costs as % of median income for detached/two-storey/condo by CMA |
+| Ratehub.ca | https://www.ratehub.ca/best-mortgage-rates | Web (no official API); GitHub scraper at https://github.com/vkhazin/mortgage-rates-service | FREE (scraping) | 3x daily from 50+ lenders | MEDIUM | Best rates by term, by insurance type, provider names, historical rates |
+| OSFI E2 Mortgage Data | Aggregate data via CMHC dashboard | Dashboard | FREE | Quarterly | MEDIUM | Insured/uninsured balances, LTV bands, arrears by province |
+| StatCan Building Construction Price Index | https://www150.statcan.gc.ca/t1/tbl1/en/tv.action?pid=1810027602 | CSV/API | FREE | Quarterly | MEDIUM | Price index (2017=100) for 4 residential building types with division-level breakdown (concrete, wood, electrical, etc.). Vancouver CMA covered |
+
+---
+
+### B9. Development Pipeline
+
+| Source | URL | Format | Cost | Update Frequency | Relevance | Key Fields |
+|--------|-----|--------|------|------------------|-----------|------------|
+| City of Vancouver Development Tracker | https://development.vancouver.ca/ and https://www.shapeyourcity.ca/development | Web-based searchable interface | FREE | Continuously updated | HIGH | Application address, type (DP/rezoning), status, applicant, description |
+| City of Vancouver Issued Building Permits | https://opendata.vancouver.ca/explore/dataset/issued-building-permits/ | CSV/JSON/GeoJSON/API | FREE | Ongoing (data from 2017+) | HIGH | Permit number, issue date, property use, type of work, project value, address, coordinates |
+| CMHC Housing Market Information Portal | https://www03.cmhc-schl.gc.ca/hmip-pimh/ | Excel/CSV/interactive | FREE | Monthly | HIGH | Census tract-level data for starts, completions, under construction, absorbed units by dwelling type. Historical data from 1990 |
+| 💰 MLA Canada (formerly MLA Advisory) | https://mlacanada.com/ | Proprietary reports, monthly Presale Pulse | 💰 Paid consulting engagement | Monthly | HIGH (but deprioritized — paid) | Presale launch tracking, pricing per sqft by submarket, absorption velocity, demand/supply analysis. Western Canada's most comprehensive presale market intelligence |
+| 💰 Altus Data Studio | https://www.altusgroup.com/data-analytics/ | Web platform with API | 💰 Paid subscription | Ongoing | HIGH (but deprioritized — paid) | New home sales, development application monitoring (Vancouver), office/industrial listings, multifamily rental data, sales transactions with cap rates |
+| Altus Canadian Cost Guide 2025 | https://www.altusgroup.com/featured-insights/canadian-cost-guide/ | Free PDF (registration required) | FREE | Annual | HIGH | Industry-standard construction cost benchmarks based on 6,200+ projects representing C$521B+. Hard costs per sqft by building type for Vancouver |
+| 💰 RSMeans (Gordian) | https://www.rsmeansonline.com/ | Web application | 💰 ~$2,268-$8,000/year | Quarterly | MEDIUM-HIGH (but deprioritized — use Altus free guide + StatCan BCPI instead) | 92,000+ unit costs, 970+ locations including Vancouver |
+| Vancouver Development Cost Levies | https://vancouver.ca/home-property-development/development-cost-levies.aspx | Free PDF | FREE | Annual | HIGH | Current combined rate: ~$38.42/sqft for high-density residential (frozen at 2023 levels). Financing Growth Update planned Q2 2026 |
+| Community Amenity Contributions | https://vancouver.ca/home-property-development/community-amenity-contributions.aspx | Free PDF policy documents + annual reports | FREE | Annual | HIGH | CAC target rates by area-specific policy. 2025: discount increased from 20% to 40% for in-stream rezonings |
+| BC Housing | https://www.bchousing.org/research-centre/housing-data | Interactive map, reports | FREE | Ongoing | MEDIUM | Project locations, unit counts, project type, status, completion year |
+| Presale Databases (various) | PresalesBC.com, MikeStewart.ca/presales/, VancouverNewCondos.com, BuzzBuzzHome.com | Web listings only | FREE (to browse, no APIs) | Ongoing | MEDIUM | Useful for validation, not bulk data |
+
+---
+
+### B10. Visual and Imagery Data
+
+| Source | URL | Format | Cost | Update Frequency | Relevance | Key Fields |
+|--------|-----|--------|------|------------------|-----------|------------|
+| City of Vancouver LiDAR 2022 | https://opendata.vancouver.ca/explore/dataset/lidar-2022/ | LAS files, 181 tiles | FREE | Periodic (~every 6 years) | HIGH | ~49 points/m², 134 km² coverage (City of Vancouver + UBC Endowment Lands). Classifications: bare earth, vegetation, water, buildings. Critical for building height extraction and flood risk |
+| LidarBC Provincial Portal | https://lidar.gov.bc.ca/ | LAS/LAZ point clouds, GeoTIFF | FREE (Open Government Licence) | Expanding coverage | MEDIUM | Provincial LiDAR, expanding coverage across BC |
+| 💰 Google Street View API | https://developers.google.com/maps/documentation/streetview/ | REST API (JPEG/PNG) | 💰 ~$7/1,000 panoramas (static); $14/1,000 (dynamic); ~10,000 free/month | Virtually complete Metro Vancouver coverage | HIGH (free tier may suffice for validation) | Street-level imagery. Consider free tier for spot-checking |
+| Microsoft Canadian Building Footprints | https://github.com/microsoft/CanadianBuildingFootprints | GeoJSON | FREE (ODbL) | Periodic ML-generated updates | HIGH | 11.8 million footprints across Canada. ML-generated from imagery. No height data |
+| OpenStreetMap Building Data | https://www.openstreetmap.org/ via Overpass API | .osm/.pbf/GeoJSON | FREE (ODbL) | Continuously updated | HIGH | Good Metro Vancouver coverage with building:levels and height tags for many buildings. 3D rendering via https://osmbuildings.org/ |
+| 💰 Nearmap | https://www.nearmap.com/ | WMS/WMTS tiles, 3D mesh | 💰 ~$10,000-$50,000+/year | Multiple captures/year at 5.4-7.5cm resolution | HIGH (but deprioritized — very expensive) | AI layers include roof type, solar potential, construction changes |
+| Canada Structures (Public Safety Canada) | https://open.canada.ca/data/en/dataset/3829eee9-f898-4643-9ad8-f48575b8873d | GeoJSON/SHP | FREE | 2025 release merging ODB, OSM, and Microsoft footprints | MEDIUM | Merged building footprint dataset |
+| District of North Vancouver Building Footprints | https://geoweb.dnv.org/data/ | Shapefile | FREE | Periodic | MEDIUM-HIGH | Footprint geometry, structural type, number of stories, population estimate. One of the few municipal datasets with building height attributes |
+| MLS Listing Photos | Via CREA DDF API at https://ddfapi-docs.realtor.ca/ | RESO Web API (JSON) with photo URLs on CDN | Requires REALTOR membership (Aparna will have access) | Real-time | HIGH | Photos up to 1280px. Aparna's realtor license provides access |
+| Metro Vancouver LiDAR 2022 | https://open-data-portal-metrovancouver.hub.arcgis.com/ | LAS/GeoTIFF | FREE | Periodic | HIGH | Regional LiDAR coverage. View analysis (ocean/mountain view premiums), flood risk, building heights |
+
+---
+
+### B11. Commercial and Mixed-Use
+
+| Source | URL | Format | Cost | Update Frequency | Relevance | Key Fields |
+|--------|-----|--------|------|------------------|-----------|------------|
+| 💰 CoStar Group | https://www.costar.com/ | Web platform + enterprise API | 💰 ~$3,000-$23,000/year (average ~$15,000) | Ongoing | HIGH for commercial/mixed-use (but deprioritized — very expensive) | 8.5M+ properties globally: property records, vacancy, rent, lease comps (11M+), sale comps (2M+), cap rates, market analytics |
+| 💰 Altus Group Data Studio | See B9 | Web platform with API | 💰 Paid subscription | Ongoing | MEDIUM (deprioritized) | Strong Canadian focus with Vancouver transaction data, cap rates, development monitoring |
+| LTSA Corporate Ownership + ParcelMap BC | https://ltsa.ca/ and https://parcelmapbc.ltsa.ca/ | Spatial boundaries | FREE (open data view via BC Data Catalogue) | Ongoing | HIGH | All 2+ million parcels in BC including building strata extents |
+| AUTOPROP | https://autoprop.ca/ | Web platform | 💰 Licensed real estate professionals | Ongoing | MEDIUM (Aparna may access via realtor license) | Aggregates 125+ data sources into single interface for licensed professionals |
+| LOTR (Land Owner Transparency Registry) | https://landtransparency.ca/ | Web search via myLTSA | FREE (since April 1, 2024) | Ongoing | HIGH | 50 searches/day limit. Reveals beneficial owners behind corporate/trust structures. First-of-its-kind in Canada. Fields: beneficial owner names, citizenship, country of residence for tax purposes |
+
+---
+
+### B12. Utility and Infrastructure
+
+| Source | URL | Format | Cost | Update Frequency | Relevance | Key Fields |
+|--------|-----|--------|------|------------------|-----------|------------|
+| BC Hydro | https://www.bchydro.com/powersmart/business/resources/energy-efficiency-benchmarking/request.html | Requires owner authorization for building-level; grid-level hourly load data publicly downloadable | FREE (grid-level); requires authorization (building-level) | Ongoing | MEDIUM (limited public access) | Grid-level hourly load data. Building-level data requires owner authorization |
+| FortisBC | Account holders only | N/A | 💰 Account holders only | Ongoing | LOW (no public aggregate data) | No public aggregate data. AMI smart meter rollout expected complete by 2028 |
+| ISED National Broadband Map | https://ised-isde.canada.ca/app/scr/sittibc/web/bbmap; bulk download at https://open.canada.ca/data/en/dataset/00a331db-121b-445d-b119-35dbbe3eedd9 | CSV/GPKG | FREE | Twice yearly | MEDIUM | Granular to 250m road segments: download/upload speeds by technology type, ISP coverage. Broadband quality increasingly affects property desirability |
+| Metro Vancouver Water/Sewer | https://gis.metrovancouver.org/mvmaps/ and https://opendata.vancouver.ca/explore/dataset/sewer-mains/ | GIS/ArcGIS | FREE | Weekly updates (CoV) | MEDIUM | Sewer main type, pipe diameter, material, installation date, pump stations. Relevant for development feasibility |
+
+---
+
+### B13. Validation Platforms
+
+**None of these platforms offer official APIs for data extraction.** All data must come from underlying sources (MLS data feeds via brokerage agreements, BC Assessment bulk data, or LTSA). These are for manual validation and benchmarking only.
+
+| Source | URL | Format | Cost | Update Frequency | Relevance | Key Fields |
+|--------|-----|--------|------|------------------|-----------|------------|
+| HouseSigma | https://housesigma.com/bc/ | Web/mobile (no API) | FREE (account required) | Real-time | HIGH (validation only) | BC data going back to 2003. AI valuations (claims 2.72% on-market error, 6.79% off-market error), sold prices, rental yield estimates, true DOM (accounting for relistings) |
+| Zealty.ca | https://www.zealty.ca/ | Web (no API) | FREE (account required) | Real-time | HIGH (validation only) | Pioneer in publishing BC sold data publicly since 2018. Covers Greater Vancouver, Fraser Valley. Monthly statistics at https://www.zealty.ca/stats.html. Sold history 4+ years, lot boundaries, ALR overlay |
+| Wahi.com | https://wahi.com/ | Web (no API) | FREE (account required) | Real-time | HIGH (benchmarking) | Claims 90% accuracy on AI valuations using 19+ years of data. Shows methodology and confidence intervals. Publishes RPS-Wahi House Price Index covering 1,000+ Canadian communities monthly |
+| REW.ca | https://www.rew.ca/ | Web (no API) | FREE | Real-time (updated every 15-30 minutes) | HIGH (validation only) | Comprehensive active listings from GVR, FVREB, Chilliwack boards. Sold data via BC Assessment partnership. Rental listings via RentSync |
+| Google Trends | https://trends.google.com/ | Python library `pytrends` (pip install) | FREE (rate-limited, ~1,400 requests before throttle) | Real-time | MEDIUM | Filter: geo='CA-BC', cat=29 (Real Estate). Relative interest over time, interest by region, related queries. Useful as a demand-side leading indicator |
+
+---
+
+### B14. Legal and Regulatory
+
+| Source | URL | Format | Cost | Update Frequency | Relevance | Key Fields |
+|--------|-----|--------|------|------------------|-----------|------------|
+| BC Speculation and Vacancy Tax Data | https://news.gov.bc.ca/files/SVT_DatabyMunicipality.pdf | PDF annual reports | FREE | Annual | HIGH | Current rate rising to 3% for foreign owners (2026), 4% (2027). Revenue: ~$105M (2025/26). Owner classification by municipality, vacancy counts, conversion rates. Since 2018, has added 20,000+ rental units in Metro Vancouver |
+| Vancouver Empty Homes Tax | https://vancouver.ca/home-property-development/empty-homes-tax.aspx | PDF annual reports | FREE | Annual | HIGH | Current rate: 3% of assessed value. 2024 data: 979 vacant homes (record low, 0.49% vacancy rate, down 67% from 2017). $194.3M total revenue since inception. Neighbourhood-level vacancy data available |
+| BC Residential Tenancy Branch Dispute Decisions | https://tenancydispute.gov.bc.ca/PostedDecisions/ | Searchable web database | FREE | Continuously updated | MEDIUM | Dispute type, outcome, monetary awards, eviction orders |
+| Court Services Online (CSO) | https://justice.gov.bc.ca/cso/esearch/esearchHome.do | Web search | 💰 $6/file view online (free at Courthouse Libraries BC) | Ongoing | MEDIUM | Foreclosure proceedings (~1,500/year in BC), property disputes, construction litigation, builders' liens |
+| BC Building Code 2024 | https://www2.gov.bc.ca/gov/content/industry/construction-industry/building-codes-standards/bc-codes | Free digital PDF | FREE | Periodic | MEDIUM | Key changes impacting costs: 20% adaptable units required, new seismic requirements, cooling to max 26 degrees C, 20% energy efficiency improvement, mass timber to 18 storeys |
+| Municipal OCP and Zoning | Vancouver: https://opendata.vancouver.ca/explore/dataset/zoning-districts-and-labels/ (GIS); https://maps.vancouver.ca/zoning/ (interactive) | GIS data + interactive maps | FREE | Ongoing | HIGH | BC requires all municipalities to complete OCP and zoning updates by December 31, 2025 (including SSMUH compliance allowing 3-6 units on single-family lots) |
+
+---
+
+### B15. Weather and Climate
+
+| Source | URL | Format | Cost | Update Frequency | Relevance | Key Fields |
+|--------|-----|--------|------|------------------|-----------|------------|
+| Environment Canada GeoMet API | https://api.weather.gc.ca/ | OGC API returning GeoJSON/CSV/XML | FREE (anonymous, no key) | Historical data back to 1840s | MEDIUM | Hourly/daily temperature, precipitation, wind, humidity, degree days, climate normals (1981-2010, 1991-2020) |
+| PCIC Climate Explorer | https://services.pacificclimate.org/pcex/app/ | NetCDF/CSV | FREE | CMIP5/CMIP6 scenarios | MEDIUM | Projected temperature, precipitation, climate extremes under multiple emissions scenarios out to 2080 |
+| ClimateData.ca | https://climatedata.ca/ | Interactive portal | FREE | Ongoing | MEDIUM | Hosted by PCIC, Environment Canada, Ouranos, and Prairie Climate Centre. Climate projections for any Canadian location with sector-specific analysis |
+
+---
+
+### B16. Prioritized Implementation: Top 20 Missing Sources
+
+Based on what the engine already has (MLS, BC Assessment, LTSA, CoV Open Data, CMHC starts/completions/vacancy, Walk Score, Fraser Institute, VPD crime), these are the 20 most impactful additions ranked by value-to-effort ratio. **All top 19 are free.**
+
+| Rank | Source | Cost | Why It Matters |
+|------|--------|------|----------------|
+| 1 | BC Property Transfer Tax weekly data | FREE | Transaction volumes + foreign buyer flags — likely missing from current stack |
+| 2 | Bank of Canada Valet API | FREE | Mortgage rates + yields, no key required — should be first financial integration |
+| 3 | StatCan Census Profile API | FREE | Demographics at dissemination area level, no API key |
+| 4 | TransLink GTFS static data | FREE | All transit stops/routes/schedules, no API key |
+| 5 | CensusMapper / cancensus | FREE | Census data with spatial geometry, free API key |
+| 6 | BC FSA school data | FREE | Build proprietary school quality scores from raw data |
+| 7 | ALR boundary polygons | FREE | Quarterly-updated SHP, critical for development potential |
+| 8 | BC floodplain maps + CoV flood data | FREE | GIS flood extents including sea level rise scenarios |
+| 9 | Liquefaction susceptibility maps | FREE | Critical for Richmond and Delta property pricing |
+| 10 | City of Vancouver LiDAR 2022 | FREE | 49 pts/m², building heights, flood risk |
+| 11 | BC Site Registry contaminated sites | FREE | Spatial layer with 30,000+ sites |
+| 12 | Inside Airbnb Vancouver | FREE | 106-attribute STR data, quarterly |
+| 13 | CMHC Rental Market Survey zone-level | FREE | 25 zones in Vancouver CMA |
+| 14 | Metro Vancouver Housing Data Book | FREE | Comprehensive regional housing data (2025 edition) |
+| 15 | Microsoft Building Footprints | FREE | 11.8M Canadian buildings as GeoJSON |
+| 16 | BC Stats population/household projections | FREE | Municipal-level demand forecasting |
+| 17 | IRCC monthly immigration data | FREE | Immigration by CMA — key demand driver |
+| 18 | YVR noise exposure maps | FREE | NEF contours, significant price impact |
+| 19 | Vancouver Empty Homes Tax data | FREE | Neighbourhood-level vacancy data |
+| 20 | eStrataHub + Eli Report pipeline | 💰 Paid per-doc | Only scalable strata data path — paid but strategically essential |
+
+---
+
+### B17. Key Structural Gaps
+
+Three structural gaps remain unsolved across all 120+ sources identified:
+
+1. **School catchment boundary GIS data** — Fragmented across 40+ school districts. Only North Vancouver (SD44) provides downloadable GIS shapefiles. All other districts use PDF maps or mybaragar.com web locators. Assembling a complete Metro Vancouver catchment boundary dataset requires either contacting each district individually or reverse-engineering from web locators programmatically. This is a significant competitive moat if built.
+
+2. **Strata document data** — No centralized database exists. BC's 33,955 strata plans and 777,919 active lots have no bulk access. Form B certificates, depreciation reports, insurance details, and meeting minutes must be ordered per-property through eStrataHub or individual property managers. Building a proprietary database of per-building strata health metrics from accumulated Form Bs creates an unassailable competitive advantage.
+
+3. **Municipal open data standardization** — Each of Metro Vancouver's 21 municipalities has a different format, portal, and level of data accessibility. Surrey uses CKAN, Burnaby uses ArcGIS Hub, Richmond uses a custom GIS portal, and many smaller municipalities offer only basic interactive maps with no bulk download. A unified ETL pipeline must handle each municipality's idiosyncrasies individually.

@@ -107,6 +107,12 @@ LOCATION_FEATURES = [
     FeatureDefinition("census_tract_pop_density", "Population density of census tract", "float", "statistics_canada", tier=FeatureTier.PHASE_2, unit="persons/sqkm"),
     FeatureDefinition("crime_density_500m", "Crime incidents within 500m (trailing 12 months)", "float", "vpd_crime", tier=FeatureTier.PHASE_2),
     FeatureDefinition("amenity_density_500m", "Count of amenities within 500m (restaurants, shops, etc.)", "int", "openstreetmap", tier=FeatureTier.PHASE_2),
+    FeatureDefinition("child_care_within_1km", "Licensed child care facilities within 1km", "int", "vancouver_open_data",
+                       tier=FeatureTier.PHASE_2),
+    FeatureDefinition("school_fsa_score_nearest", "FSA numeracy/literacy score for nearest school", "float", "bc_education",
+                       tier=FeatureTier.PHASE_1),
+    FeatureDefinition("post_secondary_dist_km", "Distance to nearest post-secondary institution", "float", "openstreetmap",
+                       tier=FeatureTier.PHASE_3, unit="km"),
 ]
 
 # ============================================================
@@ -191,6 +197,10 @@ LAND_FEATURES = [
                        property_types=[PropertyType.DETACHED, PropertyType.DEVELOPMENT_LAND]),
     FeatureDefinition("dcl_rate_per_sqft", "Applicable DCL rate", "float", "vancouver_open_data",
                        property_types=[PropertyType.DEVELOPMENT_LAND], tier=FeatureTier.PHASE_3, unit="$/sqft"),
+    FeatureDefinition("alr_flag", "Agricultural Land Reserve status", "bool", "bc_data_catalogue",
+                       property_types=[PropertyType.DETACHED, PropertyType.DEVELOPMENT_LAND], tier=FeatureTier.PHASE_1),
+    FeatureDefinition("contaminated_site_within_500m", "Proximity to BC Site Registry contaminated site", "bool", "bc_data_catalogue",
+                       tier=FeatureTier.PHASE_2),
 ]
 
 # ============================================================
@@ -210,6 +220,18 @@ VIEW_ENVIRONMENTAL_FEATURES = [
     FeatureDefinition("ndvi_500m", "Vegetation index within 500m radius", "float", "google_earth_engine", tier=FeatureTier.PHASE_4),
     FeatureDefinition("photo_condition_score", "AI condition score from listing photos", "float", "helldata_qualityscore", tier=FeatureTier.PHASE_2),
     FeatureDefinition("photo_kitchen_score", "AI kitchen quality sub-score", "float", "helldata_qualityscore", tier=FeatureTier.PHASE_2),
+    FeatureDefinition("wildfire_wui_risk_class", "Wildland-Urban Interface risk class (1-5)", "int", "bc_data_catalogue",
+                       property_types=[PropertyType.DETACHED], tier=FeatureTier.PHASE_2),
+    FeatureDefinition("tree_canopy_pct_500m", "Tree canopy coverage within 500m radius", "float", "vancouver_open_data",
+                       tier=FeatureTier.PHASE_3, unit="%"),
+    FeatureDefinition("yvr_noise_nef", "YVR noise exposure forecast contour value", "float", "yvr_noise_contours",
+                       tier=FeatureTier.PHASE_2),
+    FeatureDefinition("air_quality_aqhi_avg", "Average AQHI for nearest sub-region", "float", "environment_canada",
+                       tier=FeatureTier.PHASE_3),
+    FeatureDefinition("broadband_speed_mbps", "Download speed at 250m road segment", "float", "ised_broadband",
+                       tier=FeatureTier.PHASE_3, unit="Mbps"),
+    FeatureDefinition("climate_risk_composite", "Composite climate risk (flood + fire + seismic + sea level)", "float", "derived",
+                       tier=FeatureTier.PHASE_3),
 ]
 
 # ============================================================
@@ -235,6 +257,22 @@ MARKET_CONTEXT_FEATURES = [
     FeatureDefinition("employment_growth_ct", "Employment growth in census tract (trailing 12m)", "float", "statistics_canada", tier=FeatureTier.PHASE_3),
     FeatureDefinition("foreign_buyer_share", "Foreign buyer % of transactions (municipality)", "float", "bc_ptt", tier=FeatureTier.PHASE_3),
     FeatureDefinition("mortgage_renewal_exposure", "% of area mortgages due for renewal in 12 months", "float", "derived", tier=FeatureTier.PHASE_4),
+    FeatureDefinition("foreign_buyer_pct_municipality", "Foreign buyer share from BC PTT data", "float", "bc_ptt",
+                       tier=FeatureTier.PHASE_1),
+    FeatureDefinition("ptt_transaction_volume_30d", "Property transfer volume trailing 30 days", "int", "bc_ptt",
+                       tier=FeatureTier.PHASE_1),
+    FeatureDefinition("immigration_pr_monthly_cma", "Monthly permanent residents to Vancouver CMA", "int", "ircc",
+                       tier=FeatureTier.PHASE_2),
+    FeatureDefinition("google_trends_real_estate_bc", "Google Trends index for BC real estate", "float", "google_trends",
+                       tier=FeatureTier.PHASE_3),
+    FeatureDefinition("empty_homes_tax_vacancy_rate", "EHT neighbourhood vacancy rate (Vancouver only)", "float", "vancouver_open_data",
+                       tier=FeatureTier.PHASE_2),
+    FeatureDefinition("svt_vacancy_rate_municipality", "SVT vacancy rate by municipality", "float", "bc_data_catalogue",
+                       tier=FeatureTier.PHASE_2),
+    FeatureDefinition("affordability_mppi", "National Bank MPPI (mortgage payment % of income)", "float", "national_bank",
+                       tier=FeatureTier.PHASE_2),
+    FeatureDefinition("str_density_500m", "Short-term rental listings within 500m", "int", "vancouver_open_data",
+                       tier=FeatureTier.PHASE_2),
 ]
 
 # ============================================================

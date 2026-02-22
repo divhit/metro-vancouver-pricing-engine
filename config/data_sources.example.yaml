@@ -153,6 +153,46 @@ bank_of_canada:
   cost: "FREE"
   priority: "HIGH"
 
+bc_property_transfer_tax:
+  provider: "BC Ministry of Finance"
+  description: "Weekly transaction volumes, FMV, foreign buyer flags by municipality"
+  url: "https://catalogue.data.gov.bc.ca/"
+  format: "CSV/XLSX"
+  update_frequency: "Weekly + monthly"
+  cost: "FREE"
+  priority: "CRITICAL"
+  note: "Foreign buyer involvement data from 2016+, exceptionally valuable"
+
+bc_fsa_school_data:
+  provider: "BC Data Catalogue"
+  description: "Foundation Skills Assessment results — raw data behind Fraser Institute rankings"
+  url: "https://catalogue.data.gov.bc.ca/dataset/bc-schools-foundation-skills-assessment-fsa-"
+  format: "CSV/XLSX"
+  fields: ["school_year", "school_number", "district_number", "skill_code", "grade", "score_levels"]
+  update_frequency: "Annual"
+  cost: "FREE"
+  priority: "HIGH"
+
+bc_schools_locations:
+  provider: "BC Data Catalogue"
+  description: "All K-12 school locations in BC with lat/lon"
+  url: "https://catalogue.data.gov.bc.ca/dataset/bc-schools-k-12-with-francophone-indicators"
+  format: "CSV/KML/WMS"
+  update_frequency: "Annual"
+  cost: "FREE"
+  priority: "HIGH"
+
+environment_canada_weather:
+  provider: "Environment and Climate Change Canada"
+  description: "Historical weather data back to 1840s, climate normals"
+  api_url: "https://api.weather.gc.ca/"
+  format: "GeoJSON/CSV/XML (OGC API)"
+  auth: "NONE REQUIRED"
+  python_package: "env-canada"
+  update_frequency: "Hourly"
+  cost: "FREE"
+  priority: "HIGH"
+
 # ============================================================
 # TIER 2 — High Value Sources
 # ============================================================
@@ -218,6 +258,262 @@ bc_data_catalogue:
     school_districts: ""
   r_package: "bcdata"
   cost: "FREE"
+
+alr_boundaries:
+  provider: "Agricultural Land Commission"
+  description: "ALR boundary polygons — restricts development in Richmond, Delta, Surrey, Langley"
+  url: "https://catalogue.data.gov.bc.ca/dataset/alc-alr-polygons"
+  format: "SHP/WMS"
+  update_frequency: "Quarterly"
+  cost: "FREE"
+  priority: "HIGH"
+
+bc_floodplains:
+  provider: "BC Data Catalogue"
+  description: "Mapped floodplains in BC, 200-year flood extents"
+  url: "https://catalogue.data.gov.bc.ca/dataset/mapped-floodplains-in-bc-historical"
+  format: "SHP/WMS/KML"
+  cost: "FREE"
+  priority: "HIGH"
+
+cov_floodplain_future:
+  provider: "City of Vancouver"
+  description: "Flood extents including 2100 sea level rise scenarios"
+  url: "https://opendata.vancouver.ca/explore/dataset/designated-floodplain/"
+  format: "GeoJSON/SHP/CSV"
+  cost: "FREE"
+  priority: "HIGH"
+
+bc_site_registry:
+  provider: "BC Ministry of Environment"
+  description: "30,000+ contaminated sites across BC"
+  url: "Free spatial layer via iMapBC"
+  format: "GIS/WMS"
+  cost: "FREE (spatial layer)"
+  priority: "HIGH"
+
+cov_lidar_2022:
+  provider: "City of Vancouver"
+  description: "LiDAR 2022, 49 pts/m², 134km² coverage, building height extraction"
+  url: "https://opendata.vancouver.ca/explore/dataset/lidar-2022/"
+  format: "LAS (181 tiles)"
+  cost: "FREE"
+  priority: "HIGH"
+
+microsoft_building_footprints:
+  provider: "Microsoft"
+  description: "11.8M Canadian building footprints, ML-generated"
+  url: "https://github.com/microsoft/CanadianBuildingFootprints"
+  format: "GeoJSON"
+  license: "ODbL"
+  cost: "FREE"
+  priority: "HIGH"
+
+inside_airbnb:
+  provider: "Inside Airbnb"
+  description: "Vancouver STR data, 106 attributes per listing"
+  url: "https://insideairbnb.com/get-the-data/"
+  format: "CSV (gzipped)"
+  license: "CC-BY 4.0"
+  update_frequency: "Quarterly"
+  cost: "FREE"
+  priority: "HIGH"
+
+lotr:
+  provider: "LTSA"
+  description: "Land Owner Transparency Registry — beneficial owners behind corporate/trust structures"
+  url: "https://landtransparency.ca/"
+  access: "Free since April 2024 via myLTSA, 50 searches/day"
+  cost: "FREE"
+  priority: "HIGH"
+
+bc_child_care_map:
+  provider: "BC Data Catalogue"
+  description: "~4,000 licensed child care facilities with vacancy status"
+  url: "https://catalogue.data.gov.bc.ca/dataset/child-care-map-data"
+  format: "CSV/KML/WMS"
+  update_frequency: "Daily"
+  cost: "FREE"
+  priority: "MEDIUM-HIGH"
+
+yvr_noise:
+  provider: "Vancouver Airport Authority"
+  description: "NEF contour noise maps, aircraft noise monitoring"
+  url: "https://www.yvr.ca/en/about-yvr/noise-management"
+  format: "PDF/WebTrak"
+  cost: "FREE"
+  priority: "HIGH"
+  note: "Significant impact on Richmond, South Vancouver, Delta property values"
+
+bc_wildfire_wui:
+  provider: "BC Wildfire Service"
+  description: "Wildfire-Urban Interface risk class maps"
+  url: "https://www2.gov.bc.ca/gov/content/safety/wildfire-status/prevention/fire-fuel-management/wui-risk-class-maps/wui-downloads"
+  format: "PDF/KML"
+  cost: "FREE"
+  priority: "MEDIUM"
+  note: "Most relevant for North Shore, Anmore, Belcarra, Port Moody"
+
+metro_van_tree_canopy:
+  provider: "Metro Vancouver"
+  description: "5m resolution tree canopy cover, 31% canopy (2020)"
+  url: "https://open-data-portal-metrovancouver.hub.arcgis.com/"
+  format: "GIS raster"
+  cost: "FREE"
+  priority: "MEDIUM"
+
+bc_air_quality:
+  provider: "BC Ministry of Environment"
+  description: "Real-time AQHI for 4 Metro Vancouver sub-regions"
+  url: "https://www.env.gov.bc.ca/epd/bcairquality/data/aqhi-table.html"
+  format: "HTML (hourly)"
+  cost: "FREE"
+  priority: "MEDIUM"
+
+cov_str_licenses:
+  provider: "City of Vancouver"
+  description: "Short-term rental business licenses with geolocation"
+  url: "https://opendata.vancouver.ca/explore/dataset/business-licences/"
+  format: "CSV/JSON/API"
+  update_frequency: "Daily"
+  cost: "FREE"
+  filter: "Business type = Short-Term Rental"
+  priority: "MEDIUM-HIGH"
+
+bc_rtb_rent_increases:
+  provider: "BC Residential Tenancy Branch"
+  description: "Annual maximum rent increase rates (2025: 3.0%, 2026: 2.3%)"
+  url: "https://www2.gov.bc.ca/gov/content/housing-tenancy/residential-tenancies/rent-rtb/rent-increases"
+  cost: "FREE"
+  priority: "MEDIUM"
+
+ircc_immigration:
+  provider: "IRCC / Open Canada"
+  description: "Monthly permanent resident arrivals by CMA"
+  url: "https://open.canada.ca/data/en/dataset/f7e5498e-0ad8-4417-85c9-9b8aff9b9eda"
+  format: "XLSX/CSV"
+  update_frequency: "Monthly"
+  cost: "FREE"
+  priority: "HIGH"
+
+bc_stats_projections:
+  provider: "BC Stats"
+  description: "Municipal population and household projections to 2046"
+  url: "https://bcstats.shinyapps.io/popApp/"
+  format: "CSV"
+  update_frequency: "Annual"
+  cost: "FREE"
+  priority: "HIGH"
+
+ised_broadband:
+  provider: "Innovation, Science and Economic Development Canada"
+  description: "Broadband speeds granular to 250m road segments"
+  url: "https://open.canada.ca/data/en/dataset/00a331db-121b-445d-b119-35dbbe3eedd9"
+  format: "CSV/GPKG"
+  update_frequency: "Twice yearly"
+  cost: "FREE"
+  priority: "MEDIUM"
+
+vancouver_eht:
+  provider: "City of Vancouver"
+  description: "Empty Homes Tax data, neighbourhood-level vacancy rates"
+  url: "https://vancouver.ca/home-property-development/empty-homes-tax.aspx"
+  format: "PDF reports"
+  cost: "FREE"
+  priority: "MEDIUM-HIGH"
+
+bc_svt:
+  provider: "BC Ministry of Finance"
+  description: "Speculation and Vacancy Tax data by municipality"
+  url: "https://news.gov.bc.ca/files/SVT_DatabyMunicipality.pdf"
+  format: "PDF"
+  cost: "FREE"
+  priority: "MEDIUM"
+
+nb_housing_affordability:
+  provider: "National Bank of Canada"
+  description: "MPPI, months to save, qualifying income by CMA"
+  url: "https://www.nbc.ca/content/dam/bnc/taux-analyses/analyse-eco/logement/housing-affordability.pdf"
+  format: "PDF"
+  update_frequency: "Quarterly"
+  cost: "FREE"
+  priority: "MEDIUM"
+
+rbc_housing_affordability:
+  provider: "Royal Bank of Canada"
+  description: "Ownership costs as % median income since 1985"
+  url: "https://www.rbc.com/en/economics/canadian-analysis/canadian-housing/housing-affordability/"
+  format: "PDF"
+  update_frequency: "Quarterly"
+  cost: "FREE"
+  priority: "MEDIUM"
+
+canada_structures:
+  provider: "Public Safety Canada"
+  description: "Merged building footprints from ODB, OSM, Microsoft"
+  url: "https://open.canada.ca/data/en/dataset/3829eee9-f898-4643-9ad8-f48575b8873d"
+  format: "GeoJSON/SHP"
+  cost: "FREE"
+  priority: "MEDIUM"
+
+google_trends:
+  provider: "Google"
+  description: "Real estate search interest as demand indicator"
+  url: "https://trends.google.com/"
+  python_package: "pytrends"
+  cost: "FREE (rate-limited)"
+  priority: "MEDIUM"
+
+lidarbc:
+  provider: "Province of BC"
+  description: "Provincial LiDAR coverage expanding"
+  url: "https://lidar.gov.bc.ca/"
+  format: "LAS/LAZ/GeoTIFF"
+  cost: "FREE"
+  priority: "MEDIUM"
+
+climate_data:
+  provider: "PCIC / Environment Canada / Ouranos"
+  description: "Climate projections for any Canadian location"
+  endpoints:
+    pcic: "https://services.pacificclimate.org/pcex/app/"
+    climatedata: "https://climatedata.ca/"
+  format: "NetCDF/CSV"
+  cost: "FREE"
+  priority: "MEDIUM"
+
+bc_building_code:
+  provider: "Province of BC"
+  description: "BC Building Code 2024 — key cost impacts"
+  url: "https://www2.gov.bc.ca/gov/content/industry/construction-industry/building-codes-standards/bc-codes"
+  format: "PDF"
+  cost: "FREE"
+  priority: "MEDIUM"
+  note: "20% adaptable units, cooling to 26°C, mass timber to 18 storeys"
+
+altus_cost_guide:
+  provider: "Altus Group"
+  description: "Canadian Cost Guide 2025 — construction cost benchmarks"
+  url: "https://www.altusgroup.com/featured-insights/canadian-cost-guide/"
+  format: "PDF (free registration)"
+  cost: "FREE"
+  priority: "MEDIUM-HIGH"
+
+cov_development_tracker:
+  provider: "City of Vancouver"
+  description: "Development applications, rezoning status, permits"
+  url: "https://development.vancouver.ca/"
+  cost: "FREE"
+  priority: "HIGH"
+
+metro_van_housing_data_book:
+  provider: "Metro Vancouver"
+  description: "Comprehensive 6-part housing report, municipal-level data"
+  url: "https://metrovancouver.org/services/regional-planning/Documents/metro-vancouver-housing-data-book-2025.pdf"
+  format: "PDF"
+  update_frequency: "Annual"
+  cost: "FREE"
+  priority: "HIGH"
 
 # ============================================================
 # TIER 3 — Enhanced Sources

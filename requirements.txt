@@ -46,6 +46,17 @@ prefect>=2.14.0
 
 # Data Sources
 walkscore>=0.1.0
+pytrends>=4.9.0  # Google Trends
+pyvalet>=0.2.0  # Bank of Canada Valet API wrapper
+
+# GTFS and Transit
+gtfs-kit>=7.0.0  # GTFS feed parsing
+
+# Census and Demographics
+# Census boundary files handled via geopandas (already included)
+
+# Climate and Weather
+env-canada>=0.6.0  # Environment Canada weather data
 
 # Utilities
 tqdm>=4.66.0
