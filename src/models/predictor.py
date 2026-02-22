@@ -1,0 +1,992 @@
+"""
+Property value predictor.
+
+Orchestrates the full prediction pipeline:
+1. Resolve property identity
+2. Build features
+3. Select and run ML model
+4. Apply Tier 2 adjustments
+5. Find comparables and reconcile
+6. Package results with confidence and explanation
+"""
+from __future__ import annotations
+
+import logging
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional
+
+import numpy as np
+import pandas as pd
+import shap
+
+from src.adjustments.adjustment_engine import AdjustmentEngine
+from src.comparables.comparable_engine import ComparableEngine
+from src.features.building_footprint import BuildingFootprintEstimator
+from src.features.feature_builder import FeatureBuilder
+from src.features.feature_registry import PropertyType
+from src.features.spatial_features import SpatialFeatureComputer
+from src.models.quantile_models import QuantileModelTrainer
+from src.models.subregions import SubRegionEngine
+from src.models.trainer import ModelTrainer
+from src.models.types import AdjustmentResult, ComparableProperty, PredictionResult
+
+logger = logging.getLogger(__name__)
+
+# Version string for prediction metadata
+_MODEL_VERSION = "0.1.0"
+
+
+class PropertyPredictor:
+    """Orchestrates the full prediction pipeline for property valuation.
+
+    Lazy-loads models, feature builder, subregion engine, adjustment engine,
+    and comparable engine. Caches loaded models in memory to avoid repeated
+    disk I/O across predictions.
+
+    Usage::
+
+        predictor = PropertyPredictor(model_dir="models")
+        result = predictor.predict(
+            pid="012-345-678",
+            properties_df=enriched_df,
+        )
+        print(f"Estimate: ${result.point_estimate:,.0f}")
+        print(f"Grade: {result.confidence_grade}")
+
+    Args:
+        model_dir: Directory containing trained model files.
+        mls_available: Whether MLS listing data is available for
+            enhanced feature computation and similarity scoring.
+    """
+
+    def __init__(
+        self,
+        model_dir: str = "models",
+        mls_available: bool = False,
+    ) -> None:
+        self.model_dir = Path(model_dir)
+        self.mls_available = mls_available
+
+        # Lazy-loaded components
+        self._feature_builder: Optional[FeatureBuilder] = None
+        self._subregion_engine: Optional[SubRegionEngine] = None
+        self._adjustment_engine: Optional[AdjustmentEngine] = None
+        self._comparable_engine: Optional[ComparableEngine] = None
+        self._quantile_trainer: Optional[QuantileModelTrainer] = None
+        self._model_trainer: Optional[ModelTrainer] = None
+
+        # In-memory model cache: segment_key -> (model, metadata)
+        self._model_cache: dict[str, tuple[Any, dict]] = {}
+        # Quantile model cache: segment_key -> dict[float, model]
+        self._quantile_cache: dict[str, dict[float, Any]] = {}
+
+        logger.info(
+            "PropertyPredictor initialized: model_dir=%s, mls_available=%s",
+            self.model_dir,
+            mls_available,
+        )
+
+    # ================================================================
+    # LAZY COMPONENT INITIALIZATION
+    # ================================================================
+
+    @property
+    def feature_builder(self) -> FeatureBuilder:
+        """Lazy-load the feature builder."""
+        if self._feature_builder is None:
+            spatial = SpatialFeatureComputer()
+            footprint = BuildingFootprintEstimator()
+            self._feature_builder = FeatureBuilder(
+                spatial_computer=spatial,
+                footprint_estimator=footprint,
+                phase=1,
+                mls_available=self.mls_available,
+            )
+        return self._feature_builder
+
+    @property
+    def subregion_engine(self) -> SubRegionEngine:
+        """Lazy-load the subregion engine."""
+        if self._subregion_engine is None:
+            self._subregion_engine = SubRegionEngine(min_segment_size=200)
+        return self._subregion_engine
+
+    @property
+    def adjustment_engine(self) -> AdjustmentEngine:
+        """Lazy-load the adjustment engine."""
+        if self._adjustment_engine is None:
+            self._adjustment_engine = AdjustmentEngine()
+        return self._adjustment_engine
+
+    @property
+    def comparable_engine(self) -> ComparableEngine:
+        """Lazy-load the comparable engine."""
+        if self._comparable_engine is None:
+            self._comparable_engine = ComparableEngine(
+                mls_available=self.mls_available,
+            )
+        return self._comparable_engine
+
+    @property
+    def quantile_trainer(self) -> QuantileModelTrainer:
+        """Lazy-load the quantile model trainer (used for interval prediction)."""
+        if self._quantile_trainer is None:
+            self._quantile_trainer = QuantileModelTrainer()
+        return self._quantile_trainer
+
+    @property
+    def model_trainer(self) -> ModelTrainer:
+        """Lazy-load the model trainer (used for model loading)."""
+        if self._model_trainer is None:
+            self._model_trainer = ModelTrainer(model_dir=str(self.model_dir))
+        return self._model_trainer
+
+    # ================================================================
+    # MAIN PREDICTION
+    # ================================================================
+
+    def predict(
+        self,
+        pid: Optional[str] = None,
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+        address: Optional[str] = None,
+        property_type: Optional[str] = None,
+        override_features: Optional[dict] = None,
+        properties_df: Optional[pd.DataFrame] = None,
+    ) -> PredictionResult:
+        """Generate a full property valuation.
+
+        Orchestrates the complete prediction pipeline:
+          1. Resolve property identity (PID lookup or lat/lon)
+          2. Determine segment (neighbourhood_code x property_type)
+          3. Build feature vector
+          4. Apply override features if provided
+          5. Select model via segment key + fallback hierarchy
+          6. Predict: exp(model.predict(features)) for dollar amount
+          7. Compute confidence interval from quantile models
+          8. Apply Tier 2 adjustments
+          9. Find top 5 comparables
+          10. Reconcile ML estimate with comparable range
+          11. Compute SHAP values
+          12. Assign confidence grade
+          13. Identify risk flags
+          14. Package into PredictionResult
+
+        Args:
+            pid: BC Assessment Property Identifier (PID). Used to look
+                up the property in properties_df.
+            lat: Latitude in decimal degrees (alternative to PID).
+            lon: Longitude in decimal degrees (alternative to PID).
+            address: Street address (for display; not used for lookup).
+            property_type: Property type override (e.g. 'condo').
+            override_features: Dict of feature overrides provided by the
+                user (e.g. sqft, bedrooms). These replace computed values.
+            properties_df: Enriched property universe DataFrame. Required
+                for PID lookup, comparable search, and market context.
+
+        Returns:
+            PredictionResult with point estimate, confidence interval,
+            comparables, SHAP values, adjustments, and risk flags.
+        """
+        t0 = time.perf_counter()
+
+        # ------------------------------------------------------------------
+        # 1. Resolve property identity
+        # ------------------------------------------------------------------
+        property_data = self._resolve_property(
+            pid=pid, lat=lat, lon=lon, address=address,
+            property_type=property_type, properties_df=properties_df,
+        )
+        resolved_pid = property_data.get("pid", pid or "unknown")
+
+        logger.info(
+            "Predicting for PID=%s (lat=%.5f, lon=%.5f, type=%s)",
+            resolved_pid,
+            property_data.get("latitude", 0.0),
+            property_data.get("longitude", 0.0),
+            property_data.get("property_type", "unknown"),
+        )
+
+        # ------------------------------------------------------------------
+        # 2. Determine segment
+        # ------------------------------------------------------------------
+        segment_key = self.subregion_engine.assign_segment(property_data)
+        logger.info("Assigned segment: %s", segment_key)
+
+        # ------------------------------------------------------------------
+        # 3. Build feature vector
+        # ------------------------------------------------------------------
+        features_dict = self.feature_builder.build_features_single(
+            property_data, properties_df=properties_df,
+        )
+
+        # ------------------------------------------------------------------
+        # 4. Apply override features
+        # ------------------------------------------------------------------
+        if override_features:
+            for key, value in override_features.items():
+                features_dict[key] = value
+            logger.info(
+                "Applied %d feature overrides: %s",
+                len(override_features),
+                list(override_features.keys()),
+            )
+
+        # Compute feature completeness for confidence grading
+        total_features = len(features_dict)
+        populated_features = sum(
+            1 for v in features_dict.values()
+            if v is not None and (not isinstance(v, float) or not np.isnan(v))
+        )
+        feature_completeness = (
+            populated_features / total_features * 100 if total_features > 0 else 0.0
+        )
+
+        # ------------------------------------------------------------------
+        # 5. Select model using segment key + fallback hierarchy
+        # ------------------------------------------------------------------
+        model, actual_segment = self._select_model(segment_key)
+
+        # ------------------------------------------------------------------
+        # 6-7. Predict point estimate and confidence interval
+        # ------------------------------------------------------------------
+        if model is not None:
+            # Build a single-row DataFrame from features dict
+            features_df = pd.DataFrame([features_dict])
+
+            # Align columns with what the model expects
+            model_feature_names = model.feature_name()
+            for feat in model_feature_names:
+                if feat not in features_df.columns:
+                    features_df[feat] = np.nan
+            features_df = features_df[model_feature_names]
+
+            # Point estimate: exp(model.predict(features))
+            log_pred = model.predict(features_df)
+            ml_estimate = float(np.expm1(log_pred[0]))
+
+            # Confidence interval from quantile models
+            ci_lower, ci_upper = self._compute_confidence_interval(
+                actual_segment, features_df,
+            )
+        else:
+            # No model available -- fall back to comparable median
+            logger.warning(
+                "No model found for segment '%s' (or fallbacks); "
+                "using comparable median only",
+                segment_key,
+            )
+            ml_estimate = 0.0
+            ci_lower, ci_upper = 0.0, 0.0
+
+        # ------------------------------------------------------------------
+        # 8. Apply Tier 2 adjustments
+        # ------------------------------------------------------------------
+        if ml_estimate > 0:
+            adj_result: AdjustmentResult = self.adjustment_engine.apply_all_adjustments(
+                ml_estimate=ml_estimate,
+                property_data=property_data,
+            )
+            adjusted_estimate = adj_result.adjusted_value
+            adjustments = adj_result.adjustments
+
+            # Scale CI by the same adjustment ratio
+            if ml_estimate > 0:
+                adj_ratio = adjusted_estimate / ml_estimate
+                ci_lower *= adj_ratio
+                ci_upper *= adj_ratio
+        else:
+            adjusted_estimate = 0.0
+            adjustments = []
+
+        # ------------------------------------------------------------------
+        # 9. Find top 5 comparables
+        # ------------------------------------------------------------------
+        comparables: list[ComparableProperty] = []
+        if properties_df is not None and not properties_df.empty:
+            comparables = self.comparable_engine.find_comparables(
+                subject=property_data,
+                candidates_df=properties_df,
+                k=5,
+            )
+
+        # ------------------------------------------------------------------
+        # 10. Reconcile ML estimate with comparable range
+        # ------------------------------------------------------------------
+        if comparables and adjusted_estimate > 0:
+            comp_range = self.comparable_engine.compute_comparable_range(
+                subject=property_data,
+                comparables=comparables,
+            )
+            final_estimate, divergence_pct, reconciliation_note = (
+                self.comparable_engine.reconcile_with_ml(
+                    ml_estimate=adjusted_estimate,
+                    comparable_range=comp_range,
+                    comparable_count=len(comparables),
+                )
+            )
+
+            # Also adjust CI using reconciliation ratio
+            if adjusted_estimate > 0:
+                recon_ratio = final_estimate / adjusted_estimate
+                ci_lower *= recon_ratio
+                ci_upper *= recon_ratio
+        elif comparables and adjusted_estimate <= 0:
+            # Use comparable median as the estimate when no model is available
+            comp_range = self.comparable_engine.compute_comparable_range(
+                subject=property_data,
+                comparables=comparables,
+            )
+            final_estimate = comp_range[1]  # median
+            ci_lower = comp_range[0]
+            ci_upper = comp_range[2]
+        else:
+            final_estimate = adjusted_estimate
+
+        # Ensure CI is sensible
+        if ci_lower <= 0 or ci_upper <= 0:
+            # Fallback: +/- 15% of the point estimate
+            ci_lower = final_estimate * 0.85
+            ci_upper = final_estimate * 1.15
+
+        # ------------------------------------------------------------------
+        # 11. Compute SHAP values
+        # ------------------------------------------------------------------
+        shap_values: dict[str, float] = {}
+        if model is not None:
+            shap_values = self._compute_shap_for_prediction(model, features_dict)
+
+        # ------------------------------------------------------------------
+        # 12. Assign confidence grade
+        # ------------------------------------------------------------------
+        interval_width_pct = (
+            (ci_upper - ci_lower) / final_estimate * 100
+            if final_estimate > 0
+            else 100.0
+        )
+        confidence_grade = self._assign_confidence_grade(
+            feature_completeness=feature_completeness,
+            comparable_count=len(comparables),
+            interval_width_pct=interval_width_pct,
+        )
+
+        # ------------------------------------------------------------------
+        # 13. Identify risk flags
+        # ------------------------------------------------------------------
+        risk_flags = self._identify_risk_flags(property_data)
+
+        # Add data quality risk if feature completeness is low
+        if feature_completeness < 50:
+            risk_flags.append({
+                "category": "data_quality",
+                "severity": "medium",
+                "description": (
+                    f"Feature completeness is {feature_completeness:.0f}%% "
+                    f"({populated_features}/{total_features} features populated). "
+                    f"Prediction reliability may be reduced."
+                ),
+            })
+
+        # ------------------------------------------------------------------
+        # 14. Build market context
+        # ------------------------------------------------------------------
+        market_context = self._build_market_context(property_data, properties_df)
+
+        # ------------------------------------------------------------------
+        # Package result
+        # ------------------------------------------------------------------
+        elapsed = time.perf_counter() - t0
+
+        result = PredictionResult(
+            pid=str(resolved_pid),
+            point_estimate=round(final_estimate, 2),
+            confidence_interval=(round(ci_lower, 2), round(ci_upper, 2)),
+            confidence_grade=confidence_grade,
+            comparables=comparables,
+            shap_values=shap_values,
+            adjustments=adjustments,
+            market_context=market_context,
+            risk_flags=risk_flags,
+            model_segment=actual_segment,
+            model_version=_MODEL_VERSION,
+        )
+
+        logger.info(
+            "Prediction complete for PID=%s: $%,.0f [%s] "
+            "(CI: $%,.0f - $%,.0f, %d comps, %d adjustments) in %.2fs",
+            resolved_pid,
+            final_estimate,
+            confidence_grade,
+            ci_lower,
+            ci_upper,
+            len(comparables),
+            len(adjustments),
+            elapsed,
+        )
+
+        return result
+
+    # ================================================================
+    # BATCH PREDICTION
+    # ================================================================
+
+    def predict_batch(
+        self,
+        pids: list[str],
+        properties_df: pd.DataFrame,
+    ) -> list[PredictionResult]:
+        """Generate predictions for a batch of properties.
+
+        Iterates over all PIDs, calling predict() for each. Logs
+        progress every 100 properties.
+
+        Args:
+            pids: List of PID strings to predict.
+            properties_df: Enriched property universe DataFrame.
+
+        Returns:
+            List of PredictionResult objects, one per PID. Failed
+            predictions are logged and skipped.
+        """
+        results: list[PredictionResult] = []
+        n_total = len(pids)
+        n_failed = 0
+
+        logger.info("Starting batch prediction for %d properties", n_total)
+        t0 = time.perf_counter()
+
+        for i, pid in enumerate(pids):
+            if (i + 1) % 100 == 0 or i == 0:
+                logger.info(
+                    "Batch progress: %d/%d (%.1f%%)",
+                    i + 1,
+                    n_total,
+                    (i + 1) / n_total * 100,
+                )
+
+            try:
+                result = self.predict(
+                    pid=pid,
+                    properties_df=properties_df,
+                )
+                results.append(result)
+            except Exception as exc:
+                logger.error(
+                    "Prediction failed for PID=%s: %s", pid, exc, exc_info=True,
+                )
+                n_failed += 1
+
+        elapsed = time.perf_counter() - t0
+        logger.info(
+            "Batch prediction complete: %d succeeded, %d failed out of %d "
+            "in %.1fs (%.1f predictions/sec)",
+            len(results),
+            n_failed,
+            n_total,
+            elapsed,
+            len(results) / max(elapsed, 0.001),
+        )
+
+        return results
+
+    # ================================================================
+    # MODEL SELECTION
+    # ================================================================
+
+    def _select_model(self, segment_key: str) -> tuple[Any, str]:
+        """Select the best available model for a segment.
+
+        Tries the exact segment model first, then walks the fallback
+        hierarchy via SubRegionEngine until a model is found.
+
+        Fallback chain:
+          micro__type -> area__type -> citywide__type -> citywide__all
+
+        Args:
+            segment_key: Canonical segment key.
+
+        Returns:
+            Tuple of (model, actual_segment_used). If no model is found
+            at any level, returns (None, 'none').
+        """
+        current_key = segment_key
+
+        while True:
+            # Check cache first
+            if current_key in self._model_cache:
+                model, _ = self._model_cache[current_key]
+                logger.info(
+                    "Model cache hit for segment '%s' (requested '%s')",
+                    current_key,
+                    segment_key,
+                )
+                return model, current_key
+
+            # Try loading from disk
+            try:
+                model, metadata = self.model_trainer.load_model(current_key)
+                self._model_cache[current_key] = (model, metadata)
+                logger.info(
+                    "Loaded model for segment '%s' from disk (requested '%s')",
+                    current_key,
+                    segment_key,
+                )
+                return model, current_key
+            except FileNotFoundError:
+                pass
+
+            # Walk up the fallback hierarchy
+            fallback_key = SubRegionEngine.get_fallback_segment(current_key)
+            if fallback_key == current_key:
+                # Reached the top of the hierarchy with no model
+                logger.warning(
+                    "No model found at any fallback level for segment '%s'",
+                    segment_key,
+                )
+                return None, "none"
+
+            logger.info(
+                "No model for segment '%s'; falling back to '%s'",
+                current_key,
+                fallback_key,
+            )
+            current_key = fallback_key
+
+    # ================================================================
+    # CONFIDENCE INTERVAL
+    # ================================================================
+
+    def _compute_confidence_interval(
+        self,
+        segment_key: str,
+        features_df: pd.DataFrame,
+        confidence_level: float = 0.80,
+    ) -> tuple[float, float]:
+        """Compute prediction interval from quantile models.
+
+        Attempts to load quantile models for the segment. If unavailable,
+        falls back to a heuristic interval based on the point estimate.
+
+        Args:
+            segment_key: Segment key for which quantile models may exist.
+            features_df: Single-row feature DataFrame (model-aligned).
+            confidence_level: Desired confidence level (default 0.80).
+
+        Returns:
+            Tuple of (lower_bound, upper_bound) in dollar values.
+        """
+        # Try loading quantile models
+        if segment_key not in self._quantile_cache:
+            try:
+                q_models = self.quantile_trainer.load_quantile_models(
+                    segment_key, str(self.model_dir),
+                )
+                self._quantile_cache[segment_key] = q_models
+            except FileNotFoundError:
+                logger.info(
+                    "No quantile models for segment '%s'; using heuristic CI",
+                    segment_key,
+                )
+                return 0.0, 0.0  # Caller will apply fallback
+
+        if segment_key in self._quantile_cache:
+            q_models = self._quantile_cache[segment_key]
+            try:
+                lower_arr, upper_arr = self.quantile_trainer.predict_intervals(
+                    q_models, features_df, confidence_level=confidence_level,
+                )
+                return float(lower_arr[0]), float(upper_arr[0])
+            except (ValueError, KeyError) as exc:
+                logger.warning(
+                    "Quantile prediction failed for '%s': %s", segment_key, exc,
+                )
+
+        return 0.0, 0.0
+
+    # ================================================================
+    # SHAP EXPLANATION
+    # ================================================================
+
+    def _compute_shap_for_prediction(
+        self,
+        model: Any,
+        features_dict: dict,
+    ) -> dict[str, float]:
+        """Compute SHAP values for a single prediction.
+
+        Uses SHAP's TreeExplainer to attribute the prediction to
+        individual features. Returns the top 10 features by absolute
+        SHAP contribution.
+
+        Args:
+            model: Trained LightGBM Booster.
+            features_dict: Dict of feature name -> value for this property.
+
+        Returns:
+            Dict mapping feature_name to SHAP value, sorted by absolute
+            value descending. Limited to top 10 features.
+        """
+        try:
+            model_features = model.feature_name()
+            features_row = {}
+            for feat in model_features:
+                features_row[feat] = features_dict.get(feat, np.nan)
+
+            features_df = pd.DataFrame([features_row])
+
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(features_df)
+
+            # shap_values is (1, n_features) array
+            shap_dict = dict(zip(model_features, shap_values[0]))
+
+            # Sort by absolute value and take top 10
+            sorted_shap = sorted(
+                shap_dict.items(),
+                key=lambda x: abs(x[1]),
+                reverse=True,
+            )[:10]
+
+            return {k: round(float(v), 6) for k, v in sorted_shap}
+
+        except Exception as exc:
+            logger.warning("SHAP computation failed: %s", exc)
+            return {}
+
+    # ================================================================
+    # RISK FLAGS
+    # ================================================================
+
+    def _identify_risk_flags(self, property_data: dict) -> list[dict]:
+        """Identify risk conditions for a property.
+
+        Checks for conditions that may affect value reliability or
+        represent material risks to the property holder.
+
+        Checks:
+          - Leasehold with < 40 years remaining (high)
+          - In floodplain (medium)
+          - Near contaminated site < 500m (medium)
+          - Pre-2000 wood-frame without rainscreen (medium)
+          - In ALR (high)
+
+        Args:
+            property_data: Dict of property attributes.
+
+        Returns:
+            List of risk flag dicts with category, severity, description.
+        """
+        flags: list[dict] = []
+
+        # --- Leasehold with short remaining term ---
+        lease_remaining = property_data.get("lease_remaining_years")
+        lease_type = property_data.get("lease_type", "freehold")
+        if (
+            lease_remaining is not None
+            and lease_type != "freehold"
+            and lease_remaining < 40
+        ):
+            flags.append({
+                "category": "leasehold",
+                "severity": "high",
+                "description": (
+                    f"Leasehold property with only {lease_remaining:.0f} years "
+                    f"remaining. Lease type: {lease_type}. Properties with "
+                    f"< 40 years remaining face significant financing challenges "
+                    f"and accelerating value discount."
+                ),
+            })
+
+        # --- Floodplain ---
+        in_floodplain = property_data.get("in_floodplain", False)
+        if in_floodplain:
+            flags.append({
+                "category": "environmental",
+                "severity": "medium",
+                "description": (
+                    "Property is located in a designated floodplain area. "
+                    "May face insurance surcharges and climate-related risk."
+                ),
+            })
+
+        # --- Near contaminated site ---
+        dist_contaminated = property_data.get("dist_nearest_contaminated_m")
+        contaminated_count = property_data.get("contaminated_sites_500m", 0)
+        if dist_contaminated is not None and dist_contaminated < 500:
+            flags.append({
+                "category": "environmental",
+                "severity": "medium",
+                "description": (
+                    f"Property is {dist_contaminated:.0f}m from a contaminated "
+                    f"site ({contaminated_count} contaminated sites within 500m). "
+                    f"May affect value and require environmental review."
+                ),
+            })
+
+        # --- Pre-2000 wood-frame without rainscreen ---
+        year_built = property_data.get("year_built")
+        construction_type = property_data.get("construction_type", "")
+        rainscreen_status = property_data.get("rainscreen_status")
+        if (
+            year_built is not None
+            and 1982 <= year_built <= 2000
+            and "wood" in str(construction_type).lower()
+            and rainscreen_status not in ("completed", "not_required")
+        ):
+            flags.append({
+                "category": "building_envelope",
+                "severity": "medium",
+                "description": (
+                    f"Wood-frame building constructed in {year_built} "
+                    f"(leaky condo era 1982-2000) without confirmed "
+                    f"rainscreen remediation. May face significant "
+                    f"envelope repair costs."
+                ),
+            })
+
+        # --- Agricultural Land Reserve ---
+        in_alr = property_data.get("in_alr", False)
+        if in_alr:
+            flags.append({
+                "category": "land_use",
+                "severity": "high",
+                "description": (
+                    "Property is within the Agricultural Land Reserve (ALR). "
+                    "Development is heavily restricted. Assessed value may "
+                    "not reflect fee-simple development potential."
+                ),
+            })
+
+        return flags
+
+    # ================================================================
+    # CONFIDENCE GRADING
+    # ================================================================
+
+    def _assign_confidence_grade(
+        self,
+        feature_completeness: float,
+        comparable_count: int,
+        interval_width_pct: float,
+    ) -> str:
+        """Assign a letter grade reflecting prediction confidence.
+
+        Grade criteria:
+          - A: completeness > 80%, 5+ comps, interval < 14%
+          - B: completeness > 60%, 3+ comps, interval < 24%
+          - C: everything else
+
+        Args:
+            feature_completeness: Percentage of non-null features (0-100).
+            comparable_count: Number of comparables found.
+            interval_width_pct: Confidence interval width as percentage
+                of the point estimate.
+
+        Returns:
+            Letter grade string: 'A', 'B', or 'C'.
+        """
+        if (
+            feature_completeness > 80
+            and comparable_count >= 5
+            and interval_width_pct < 14
+        ):
+            return "A"
+
+        if (
+            feature_completeness > 60
+            and comparable_count >= 3
+            and interval_width_pct < 24
+        ):
+            return "B"
+
+        return "C"
+
+    # ================================================================
+    # PRIVATE HELPERS
+    # ================================================================
+
+    def _resolve_property(
+        self,
+        pid: Optional[str],
+        lat: Optional[float],
+        lon: Optional[float],
+        address: Optional[str],
+        property_type: Optional[str],
+        properties_df: Optional[pd.DataFrame],
+    ) -> dict:
+        """Resolve property identity from PID, lat/lon, or address.
+
+        Looks up the property in properties_df by PID if available.
+        Otherwise constructs a minimal property dict from the provided
+        lat/lon and property_type.
+
+        Args:
+            pid: PID string for lookup.
+            lat: Latitude in decimal degrees.
+            lon: Longitude in decimal degrees.
+            address: Street address (for display).
+            property_type: Property type override.
+            properties_df: Enriched property universe.
+
+        Returns:
+            Dict of property attributes.
+        """
+        # Try PID lookup in the property universe
+        if pid is not None and properties_df is not None:
+            match = properties_df[properties_df["pid"].astype(str) == str(pid)]
+            if not match.empty:
+                property_data = match.iloc[0].to_dict()
+                # Apply overrides
+                if property_type:
+                    property_data["property_type"] = property_type
+                if lat is not None:
+                    property_data["latitude"] = lat
+                if lon is not None:
+                    property_data["longitude"] = lon
+                if address:
+                    property_data["address"] = address
+                logger.info("Resolved PID=%s from property universe", pid)
+                return property_data
+
+            logger.warning(
+                "PID=%s not found in property universe (%d properties)",
+                pid,
+                len(properties_df),
+            )
+
+        # Fall back to constructing minimal property data
+        property_data: dict = {
+            "pid": pid or "unknown",
+            "latitude": lat or 0.0,
+            "longitude": lon or 0.0,
+            "address": address or "",
+            "property_type": property_type or "detached",
+        }
+
+        # Try to infer neighbourhood from lat/lon using properties_df
+        if (
+            lat is not None
+            and lon is not None
+            and properties_df is not None
+            and not properties_df.empty
+            and "latitude" in properties_df.columns
+            and "longitude" in properties_df.columns
+            and "neighbourhood_code" in properties_df.columns
+        ):
+            # Find the nearest property and use its neighbourhood
+            dists = np.sqrt(
+                (properties_df["latitude"] - lat) ** 2
+                + (properties_df["longitude"] - lon) ** 2
+            )
+            nearest_idx = dists.idxmin()
+            nearest = properties_df.loc[nearest_idx]
+            property_data["neighbourhood_code"] = nearest.get(
+                "neighbourhood_code", ""
+            )
+            logger.info(
+                "Inferred neighbourhood_code=%s from nearest property",
+                property_data["neighbourhood_code"],
+            )
+
+        return property_data
+
+    def _build_market_context(
+        self,
+        property_data: dict,
+        properties_df: Optional[pd.DataFrame],
+    ) -> dict:
+        """Build market context dict for the prediction response.
+
+        Computes neighbourhood-level statistics for context.
+
+        Args:
+            property_data: Resolved property attributes.
+            properties_df: Enriched property universe.
+
+        Returns:
+            Dict with neighbourhood stats, YoY change, and interest rate.
+        """
+        neighbourhood_code = property_data.get("neighbourhood_code", "")
+        ptype = property_data.get("property_type", "")
+
+        context = {
+            "neighbourhood_code": neighbourhood_code,
+            "neighbourhood_name": neighbourhood_code.replace("-", " ").title(),
+            "median_assessed_value": 0.0,
+            "yoy_change_pct": None,
+            "interest_rate_5yr": None,
+            "property_count": 0,
+            "assessment_year": datetime.utcnow().year,
+        }
+
+        if properties_df is None or properties_df.empty:
+            return context
+
+        # Filter to same neighbourhood
+        if neighbourhood_code and "neighbourhood_code" in properties_df.columns:
+            hood_df = properties_df[
+                properties_df["neighbourhood_code"] == neighbourhood_code
+            ]
+        else:
+            hood_df = properties_df
+
+        if hood_df.empty:
+            return context
+
+        # Compute stats
+        if "total_assessed_value" in hood_df.columns:
+            context["median_assessed_value"] = round(
+                float(hood_df["total_assessed_value"].median()), 2,
+            )
+
+        context["property_count"] = len(hood_df)
+
+        # Assessment year
+        if "tax_assessment_year" in hood_df.columns:
+            context["assessment_year"] = int(
+                hood_df["tax_assessment_year"].max()
+            )
+
+        # YoY change if previous values are available
+        if (
+            "total_assessed_value" in hood_df.columns
+            and "previous_land_value" in hood_df.columns
+            and "previous_improvement_value" in hood_df.columns
+        ):
+            current_total = hood_df["total_assessed_value"].median()
+            previous_total = (
+                hood_df["previous_land_value"].fillna(0)
+                + hood_df["previous_improvement_value"].fillna(0)
+            ).median()
+
+            if previous_total > 0:
+                yoy = (current_total - previous_total) / previous_total * 100
+                context["yoy_change_pct"] = round(float(yoy), 2)
+
+        return context
+
+    def get_loaded_model_count(self) -> int:
+        """Return the number of models currently cached in memory.
+
+        Returns:
+            Count of cached segment models.
+        """
+        return len(self._model_cache)
+
+    def get_available_model_count(self) -> int:
+        """Count the number of model files on disk.
+
+        Returns:
+            Count of .pkl model files in model_dir (excluding quantile models).
+        """
+        if not self.model_dir.exists():
+            return 0
+        # Count .pkl files that are not quantile models (contain _q)
+        return sum(
+            1
+            for f in self.model_dir.glob("*.pkl")
+            if "_q" not in f.stem
+        )

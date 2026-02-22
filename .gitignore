@@ -46,8 +46,8 @@ data/external/
 *.xml
 *.fgdb/
 
-# Model artifacts
-models/
+# Model artifacts (root-level only, not src/models/)
+/models/
 *.pkl
 *.joblib
 *.h5
