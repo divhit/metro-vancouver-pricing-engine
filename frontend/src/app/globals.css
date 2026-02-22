@@ -1,0 +1,136 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-sand-50: #faf9f7;
+  --color-sand-100: #f3f1ed;
+  --color-sand-200: #e8e4dd;
+  --color-sand-300: #d5cfc5;
+  --color-sand-400: #b8b0a2;
+  --color-sand-500: #9a9080;
+  --color-sand-600: #7d7365;
+  --color-sand-700: #5f574c;
+  --color-sand-800: #423d36;
+  --color-sand-900: #2a2621;
+
+  --color-teal-50: #effefb;
+  --color-teal-100: #c7fef4;
+  --color-teal-200: #90fce9;
+  --color-teal-300: #51f1db;
+  --color-teal-400: #1ddec8;
+  --color-teal-500: #06c2ae;
+  --color-teal-600: #029d8e;
+  --color-teal-700: #077d73;
+  --color-teal-800: #0b635c;
+  --color-teal-900: #0e524d;
+
+  --font-display: "Instrument Serif", Georgia, serif;
+  --font-body: "Outfit", system-ui, sans-serif;
+}
+
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+}
+
+body {
+  font-family: var(--font-body);
+  background-color: var(--color-sand-50);
+  color: var(--color-sand-900);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Dot grid background texture */
+.bg-dotgrid {
+  background-image: radial-gradient(
+    circle,
+    var(--color-sand-300) 0.5px,
+    transparent 0.5px
+  );
+  background-size: 24px 24px;
+}
+
+/* Subtle noise overlay */
+.noise-overlay::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  z-index: 50;
+}
+
+/* Hairline card */
+.card-hairline {
+  background: white;
+  border: 1px solid var(--color-sand-200);
+  border-radius: 12px;
+}
+
+/* Teal gradient text */
+.text-gradient {
+  background: linear-gradient(135deg, var(--color-teal-600), var(--color-teal-800));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Hero number styling */
+.hero-number {
+  font-family: var(--font-display);
+  font-size: 2.75rem;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--color-sand-900);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-sand-300);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-sand-400);
+}
+
+/* Page transition */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in-up {
+  animation: fadeInUp 0.5s ease-out forwards;
+}
+
+/* Stagger delays */
+.delay-1 { animation-delay: 0.05s; }
+.delay-2 { animation-delay: 0.1s; }
+.delay-3 { animation-delay: 0.15s; }
+.delay-4 { animation-delay: 0.2s; }
+.delay-5 { animation-delay: 0.25s; }
+.delay-6 { animation-delay: 0.3s; }
+
+/* Grade badge pulse */
+@keyframes softPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+.pulse-soft {
+  animation: softPulse 2.5s ease-in-out infinite;
+}
