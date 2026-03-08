@@ -68,6 +68,8 @@ class PredictionResult:
     risk_flags: list[dict]
     model_segment: str
     model_version: str
+    market_estimate: float | None = None  # From market model (trained on sold prices)
+    market_model_info: str | None = None  # Market model description
     prediction_timestamp: datetime = field(default_factory=datetime.utcnow)
 
 

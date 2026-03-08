@@ -110,16 +110,19 @@ class FeatureBuilder:
         footprint_estimator: BuildingFootprintEstimator,
         phase: int = 1,
         mls_available: bool = False,
+        target_column: str = "total_assessed_value",
     ) -> None:
         self.spatial_computer = spatial_computer
         self.footprint_estimator = footprint_estimator
         self.phase = phase
         self.mls_available = mls_available
+        self.target_column = target_column
 
         logger.info(
-            "FeatureBuilder initialized: phase=%d, mls_available=%s",
+            "FeatureBuilder initialized: phase=%d, mls_available=%s, target=%s",
             phase,
             mls_available,
+            target_column,
         )
 
     # ================================================================
@@ -183,19 +186,20 @@ class FeatureBuilder:
         df = self._select_features(df, property_type)
 
         # --- 5. Create target variable ---
-        if "total_assessed_value" not in properties_df.columns:
+        target_col = self.target_column
+        if target_col not in properties_df.columns:
             raise ValueError(
-                "Cannot create target: 'total_assessed_value' column not found. "
-                "Run PropertyUniverseBuilder.build_universe() first."
+                f"Cannot create target: '{target_col}' column not found. "
+                f"Available columns: {list(properties_df.columns[:20])}"
             )
 
-        # Use log-transformed assessed value as target
-        raw_target = properties_df["total_assessed_value"].reindex(df.index)
+        # Use log-transformed target value
+        raw_target = properties_df[target_col].reindex(df.index)
         valid_mask = raw_target.notna() & (raw_target > 0)
 
         if not valid_mask.any():
             raise ValueError(
-                "No valid target values found. All total_assessed_value entries "
+                f"No valid target values found. All {target_col} entries "
                 "are null or non-positive."
             )
 
@@ -204,6 +208,30 @@ class FeatureBuilder:
 
         # --- 6. Drop high-null features ---
         df = self._drop_high_null_features(df)
+
+        # --- 7. Fix object-dtype columns that should be numeric ---
+        # Boolean spatial features (has_skytrain_800m, in_alr, in_floodplain,
+        # is_tod_area) can become object dtype when pd.concat merges rows
+        # with True/False and NaN.  LightGBM rejects object dtype columns.
+        obj_cols = df.select_dtypes(include=["object"]).columns.tolist()
+        n_fixed = 0
+        for col in obj_cols:
+            # Skip categorical columns (handled by LightGBM natively)
+            if hasattr(df[col], "cat"):
+                continue
+            # Handle boolean-valued object columns (True/False mixed with NaN)
+            unique_vals = set(df[col].dropna().unique())
+            if unique_vals <= {True, False}:
+                df[col] = df[col].map({True: 1, False: 0}).fillna(0).astype(int)
+                n_fixed += 1
+                continue
+            # Try to convert to numeric; if it fails, leave as-is
+            converted = pd.to_numeric(df[col], errors="coerce")
+            if converted.notna().sum() > 0 or df[col].isna().all():
+                df[col] = converted
+                n_fixed += 1
+        if n_fixed:
+            logger.info("Fixed %d object-dtype columns to numeric", n_fixed)
 
         elapsed = time.perf_counter() - t0
         logger.info(
@@ -736,12 +764,19 @@ class FeatureBuilder:
         # Exclude the target variable and identifiers from features
         exclude = {
             "total_assessed_value",
+            "sold_price",
             "pid",
             "geometry",
             "full_address",
             "property_postal_code",
             "street_name",
             "log_total_value",  # This is the target, not a feature
+            # MLS identifiers that shouldn't be features
+            "mls_number",
+            "address",
+            "sold_date",
+            "list_date",
+            "list_price",
         }
         selected = [col for col in present_columns if col not in exclude]
 

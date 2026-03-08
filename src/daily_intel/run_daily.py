@@ -188,6 +188,24 @@ def step_send_email(html: str, no_email: bool = False) -> bool:
     return sent
 
 
+def step_retrain_market_models():
+    """Step 2.5: Retrain market price models with latest sold data."""
+    logger.info("=" * 60)
+    logger.info("STEP 2.5: Retraining market price models")
+    logger.info("=" * 60)
+
+    try:
+        from src.pipeline.train_market_models import run_market_training
+        results = run_market_training(n_trials=20)  # Fewer trials for daily retrain
+        if results:
+            for key, r in results.items():
+                logger.info(f"  {key}: MAPE={r['cv_mape']:.2f}%, {r['n_samples']} samples")
+        else:
+            logger.info("  No market models trained (insufficient data)")
+    except Exception as e:
+        logger.error(f"  Market model training failed: {e}")
+
+
 def run_full_pipeline(no_email: bool = False):
     """Run the complete daily intelligence pipeline."""
     logger.info(f"Starting daily intelligence pipeline — {date.today().isoformat()}")
@@ -197,10 +215,14 @@ def run_full_pipeline(no_email: bool = False):
     init_db()
 
     # Step 1: Ingest any new MLS CSVs
-    step_ingest_mls_csvs()
+    new_ingested = step_ingest_mls_csvs()
 
     # Step 2: Fetch permits
     permits = step_fetch_permits()
+
+    # Step 2.5: Retrain market models if new data was ingested
+    if new_ingested > 0:
+        step_retrain_market_models()
 
     # Step 3: Fetch news
     news = step_fetch_news()

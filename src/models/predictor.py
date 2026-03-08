@@ -37,6 +37,21 @@ logger = logging.getLogger(__name__)
 # Version string for prediction metadata
 _MODEL_VERSION = "0.1.0"
 
+# Neighbourhood code to name mapping — 22 official City of Vancouver local areas.
+# These match the codes assigned by NeighbourhoodAssigner via spatial join
+# against the City's local-area-boundary GeoJSON polygons.
+_NEIGHBOURHOOD_NAMES: dict[str, str] = {
+    "1": "West Point Grey", "2": "Kitsilano", "3": "Dunbar-Southlands",
+    "4": "Arbutus Ridge", "5": "Kerrisdale", "6": "Shaughnessy",
+    "7": "Fairview", "8": "South Cambie", "9": "Oakridge",
+    "10": "Marpole", "11": "Riley Park", "12": "Sunset",
+    "13": "Mount Pleasant", "14": "Grandview-Woodland",
+    "15": "Hastings-Sunrise", "16": "Kensington-Cedar Cottage",
+    "17": "Killarney", "18": "Victoria-Fraserview",
+    "19": "Strathcona", "20": "Renfrew-Collingwood",
+    "21": "Downtown", "22": "West End",
+}
+
 
 class PropertyPredictor:
     """Orchestrates the full prediction pipeline for property valuation.
@@ -67,6 +82,7 @@ class PropertyPredictor:
         mls_available: bool = False,
     ) -> None:
         self.model_dir = Path(model_dir)
+        self.market_model_dir = Path(model_dir) / "market"
         self.mls_available = mls_available
 
         # Lazy-loaded components
@@ -81,6 +97,8 @@ class PropertyPredictor:
         self._model_cache: dict[str, tuple[Any, dict]] = {}
         # Quantile model cache: segment_key -> dict[float, model]
         self._quantile_cache: dict[str, dict[float, Any]] = {}
+        # Market model cache: property_type -> (model, metadata)
+        self._market_model_cache: dict[str, tuple[Any, dict]] = {}
 
         logger.info(
             "PropertyPredictor initialized: model_dir=%s, mls_available=%s",
@@ -156,6 +174,7 @@ class PropertyPredictor:
         property_type: Optional[str] = None,
         override_features: Optional[dict] = None,
         properties_df: Optional[pd.DataFrame] = None,
+        boundary_gdf=None,
     ) -> PredictionResult:
         """Generate a full property valuation.
 
@@ -201,6 +220,30 @@ class PropertyPredictor:
             property_type=property_type, properties_df=properties_df,
         )
         resolved_pid = property_data.get("pid", pid or "unknown")
+
+        # Override neighbourhood using City of Vancouver boundaries ONLY for
+        # synthetic records (not in BC Assessment) or properties without a
+        # neighbourhood_code.  BC Assessment-matched properties already have
+        # correct spatial neighbourhood codes from training (assigned by
+        # NeighbourhoodAssigner during data pipeline).
+        is_synthetic = property_data.get("_synthetic", False)
+        has_hood = bool(property_data.get("neighbourhood_code"))
+        prop_lat = property_data.get("latitude", lat or 0.0)
+        prop_lon = property_data.get("longitude", lon or 0.0)
+        if boundary_gdf is not None and prop_lat and prop_lon and (is_synthetic or not has_hood):
+            city_code, city_name = self.assign_neighbourhood_from_latlon(
+                float(prop_lat), float(prop_lon), boundary_gdf,
+            )
+            if city_code is not None:
+                old_code = property_data.get("neighbourhood_code", "?")
+                old_name = _NEIGHBOURHOOD_NAMES.get(str(old_code), str(old_code))
+                property_data["neighbourhood_code"] = city_code
+                if old_code != city_code:
+                    logger.info(
+                        "Neighbourhood override (synthetic/unmatched): %s (%s) -> %s (%s) "
+                        "via City of Vancouver boundaries",
+                        old_code, old_name, city_code, city_name,
+                    )
 
         logger.info(
             "Predicting for PID=%s (lat=%.5f, lon=%.5f, type=%s)",
@@ -248,11 +291,34 @@ class PropertyPredictor:
         # ------------------------------------------------------------------
         # 5. Select model using segment key + fallback hierarchy
         # ------------------------------------------------------------------
-        model, actual_segment = self._select_model(segment_key)
+        is_synthetic = property_data.get("_synthetic", False)
+        if is_synthetic:
+            # Synthetic record (new build not in BC Assessment).
+            # Skip the ML model — features are mostly NaN so the
+            # prediction would be meaningless.  Rely on comparables.
+            model = None
+            actual_segment = segment_key + " (synthetic)"
+            logger.info(
+                "Synthetic property — skipping ML model, will use "
+                "comparable-based valuation only",
+            )
+        else:
+            model, actual_segment = self._select_model(segment_key)
 
         # ------------------------------------------------------------------
         # 6-7. Predict point estimate and confidence interval
         # ------------------------------------------------------------------
+        # Try market price model first (trained on actual sold prices)
+        market_result = self.predict_market_price(property_data, features_dict)
+        market_estimate = None
+        market_model_info = None
+        if market_result is not None:
+            market_estimate, market_model_info = market_result
+            logger.info(
+                "Market price estimate: $%,.0f (%s)",
+                market_estimate, market_model_info,
+            )
+
         if model is not None:
             # Build a single-row DataFrame from features dict
             features_df = pd.DataFrame([features_dict])
@@ -272,7 +338,7 @@ class PropertyPredictor:
             if pandas_cats:
                 cat_col_idx = 0
                 for col in features_df.columns:
-                    if pd.api.types.is_string_dtype(features_df[col]):
+                    if pd.api.types.is_string_dtype(features_df[col]) or pd.api.types.is_categorical_dtype(features_df[col]):
                         if cat_col_idx < len(pandas_cats):
                             cat_type = pd.CategoricalDtype(
                                 categories=pandas_cats[cat_col_idx],
@@ -283,7 +349,30 @@ class PropertyPredictor:
                             features_df[col] = features_df[col].astype("category")
 
             # Point estimate: exp(model.predict(features))
-            log_pred = model.predict(features_df)
+            try:
+                log_pred = model.predict(features_df)
+            except ValueError as e:
+                if "categorical_feature" in str(e):
+                    # Categorical mismatch — encode cats as integer codes and
+                    # pass as a raw numpy array to bypass LightGBM's pandas
+                    # categorical validation entirely.
+                    logger.warning(
+                        "Categorical mismatch for segment %s — falling back "
+                        "to numeric encoding",
+                        actual_segment,
+                    )
+                    numeric_df = features_df.copy()
+                    for col in numeric_df.columns:
+                        col_dtype = numeric_df[col].dtype
+                        if isinstance(col_dtype, pd.CategoricalDtype):
+                            numeric_df[col] = numeric_df[col].cat.codes.astype(float)
+                        elif col_dtype == object or pd.api.types.is_string_dtype(col_dtype):
+                            numeric_df[col] = pd.Categorical(numeric_df[col]).codes.astype(float)
+                        elif col_dtype == bool or col_dtype == "boolean":
+                            numeric_df[col] = numeric_df[col].astype(float)
+                    log_pred = model.predict(numeric_df.values)
+                else:
+                    raise
             ml_estimate = float(np.expm1(log_pred[0]))
 
             # Confidence interval from quantile models
@@ -364,9 +453,17 @@ class PropertyPredictor:
         else:
             final_estimate = adjusted_estimate
 
-        # Ensure CI is sensible
-        if ci_lower <= 0 or ci_upper <= 0:
-            # Fallback: +/- 15% of the point estimate
+        # Ensure CI is sensible and brackets the point estimate
+        ci_width = abs(ci_upper - ci_lower)
+        needs_reset = (
+            ci_lower <= 0
+            or ci_upper <= 0
+            or ci_lower > final_estimate
+            or ci_upper < final_estimate
+            or (final_estimate > 0 and ci_width > final_estimate * 5)
+        )
+        if needs_reset:
+            # Fallback: ±15% of the point estimate
             ci_lower = final_estimate * 0.85
             ci_upper = final_estimate * 1.15
 
@@ -430,6 +527,8 @@ class PropertyPredictor:
             risk_flags=risk_flags,
             model_segment=actual_segment,
             model_version=_MODEL_VERSION,
+            market_estimate=round(market_estimate, 2) if market_estimate else None,
+            market_model_info=market_model_info,
         )
 
         logger.info(
@@ -514,14 +613,120 @@ class PropertyPredictor:
     # MODEL SELECTION
     # ================================================================
 
+    # Cross-type fallback order: townhome ↔ condo are similar (both strata),
+    # detached is a last resort.
+    _CROSS_TYPE_FALLBACKS: dict[str, list[str]] = {
+        "townhome": ["condo", "detached"],
+        "condo": ["townhome", "detached"],
+        "detached": ["condo", "townhome"],
+    }
+
+    def _scan_available_models(self) -> set[str]:
+        """Scan the models directory and return available segment keys.
+
+        Caches the result so the directory is only scanned once.
+        """
+        if not hasattr(self, "_available_segments"):
+            self._available_segments: set[str] = set()
+            for f in self.model_dir.glob("*.pkl"):
+                name = f.stem
+                # Skip quantile model variants
+                if "_q0" in name:
+                    continue
+                # Convert filename back to segment key: 6-detached -> 6__detached
+                segment = name.replace("-", "__", 1)
+                self._available_segments.add(segment)
+            logger.info(
+                "Scanned %d available model segments", len(self._available_segments),
+            )
+        return self._available_segments
+
+    def _load_market_model(self, property_type: str) -> tuple[Any, dict] | None:
+        """Try to load a market price model for the given property type.
+
+        Market models are trained on actual MLS sold prices and stored
+        in models/market/. Returns (model, metadata) or None.
+        """
+        if property_type in self._market_model_cache:
+            return self._market_model_cache[property_type]
+
+        model_path = self.market_model_dir / f"market_{property_type}.pkl"
+        meta_path = self.market_model_dir / f"market_{property_type}_metadata.json"
+
+        if not model_path.exists():
+            self._market_model_cache[property_type] = None
+            return None
+
+        import joblib
+        import json
+
+        model = joblib.load(model_path)
+        metadata = {}
+        if meta_path.exists():
+            with open(meta_path) as f:
+                metadata = json.load(f)
+
+        self._market_model_cache[property_type] = (model, metadata)
+        logger.info(
+            "Loaded market model for '%s' (MAPE=%.2f%%, %d samples)",
+            property_type,
+            metadata.get("cv_mape", 0),
+            metadata.get("n_samples", 0),
+        )
+        return (model, metadata)
+
+    def predict_market_price(
+        self,
+        property_data: dict,
+        features_dict: dict,
+    ) -> tuple[float, str] | None:
+        """Try to predict using market price model (trained on sold prices).
+
+        Returns (estimate, model_info_string) or None if no market model available.
+        """
+        ptype = property_data.get("property_type", "")
+        result = self._load_market_model(ptype)
+        if result is None:
+            return None
+
+        model, metadata = result
+        features_df = pd.DataFrame([features_dict])
+
+        # Align columns with model expectations
+        model_feature_names = model.feature_name()
+        for feat in model_feature_names:
+            if feat not in features_df.columns:
+                features_df[feat] = np.nan
+        features_df = features_df[model_feature_names]
+
+        # Handle categoricals
+        pandas_cats = model.pandas_categorical
+        if pandas_cats:
+            cat_col_idx = 0
+            for col in features_df.columns:
+                if pd.api.types.is_string_dtype(features_df[col]) or pd.api.types.is_categorical_dtype(features_df[col]):
+                    if cat_col_idx < len(pandas_cats):
+                        cat_type = pd.CategoricalDtype(categories=pandas_cats[cat_col_idx])
+                        features_df[col] = features_df[col].astype(cat_type)
+                        cat_col_idx += 1
+
+        try:
+            log_pred = model.predict(features_df)
+            market_estimate = float(np.expm1(log_pred[0]))
+            info = f"market_{ptype} (MAPE={metadata.get('cv_mape', '?')}%, n={metadata.get('n_samples', '?')})"
+            return market_estimate, info
+        except Exception as e:
+            logger.warning("Market model prediction failed for %s: %s", ptype, e)
+            return None
+
     def _select_model(self, segment_key: str) -> tuple[Any, str]:
         """Select the best available model for a segment.
 
-        Tries the exact segment model first, then walks the fallback
-        hierarchy via SubRegionEngine until a model is found.
-
-        Fallback chain:
-          micro__type -> area__type -> citywide__type -> citywide__all
+        Fallback priority:
+          1. Standard chain: exact segment -> citywide by type -> citywide all
+          2. Same type, any neighbourhood (prefer numerically close codes)
+          3. Cross-type same neighbourhood (condo for townhome, etc.)
+          4. Cross-type any neighbourhood
 
         Args:
             segment_key: Canonical segment key.
@@ -530,7 +735,92 @@ class PropertyPredictor:
             Tuple of (model, actual_segment_used). If no model is found
             at any level, returns (None, 'none').
         """
-        current_key = segment_key
+        # 1. Standard fallback chain for the original type
+        result = self._try_fallback_chain(segment_key, segment_key)
+        if result is not None:
+            return result
+
+        parts = segment_key.split("__")
+        if len(parts) != 2:
+            logger.warning(
+                "No model found at any fallback level for segment '%s'",
+                segment_key,
+            )
+            return None, "none"
+
+        area_part, type_part = parts
+        available = self._scan_available_models()
+
+        # 2. Same type, any neighbourhood — find closest available
+        same_type_segments = sorted(
+            (s for s in available if s.endswith(f"__{type_part}")),
+            key=lambda s: self._neighbourhood_distance(area_part, s.split("__")[0]),
+        )
+        for alt_seg in same_type_segments:
+            result = self._try_fallback_chain(alt_seg, segment_key)
+            if result is not None:
+                logger.info(
+                    "Same-type neighbourhood fallback: '%s' -> '%s'",
+                    segment_key, result[1],
+                )
+                return result
+
+        # 3. Cross-type: same neighbourhood first, then any neighbourhood
+        alt_types = self._CROSS_TYPE_FALLBACKS.get(type_part, [])
+        for alt_type in alt_types:
+            # Try same neighbourhood
+            alt_key = f"{area_part}__{alt_type}"
+            result = self._try_fallback_chain(alt_key, segment_key)
+            if result is not None:
+                logger.info(
+                    "Cross-type fallback: '%s' -> '%s' (used '%s')",
+                    segment_key, alt_type, result[1],
+                )
+                return result
+
+            # Try other neighbourhoods for this alt type
+            alt_segments = sorted(
+                (s for s in available if s.endswith(f"__{alt_type}")),
+                key=lambda s: self._neighbourhood_distance(
+                    area_part, s.split("__")[0],
+                ),
+            )
+            for alt_seg in alt_segments:
+                result = self._try_fallback_chain(alt_seg, segment_key)
+                if result is not None:
+                    logger.info(
+                        "Cross-type neighbourhood fallback: '%s' -> '%s'",
+                        segment_key, result[1],
+                    )
+                    return result
+
+        logger.warning(
+            "No model found at any fallback level for segment '%s'",
+            segment_key,
+        )
+        return None, "none"
+
+    @staticmethod
+    def _neighbourhood_distance(code_a: str, code_b: str) -> float:
+        """Rough proximity score between two neighbourhood codes.
+
+        Uses numeric distance as a simple heuristic — adjacent codes
+        tend to be geographically close in BC Assessment's numbering.
+        """
+        try:
+            return abs(int(code_a) - int(code_b))
+        except (ValueError, TypeError):
+            return 999
+
+    def _try_fallback_chain(
+        self, start_key: str, original_key: str,
+    ) -> tuple[Any, str] | None:
+        """Walk the standard fallback hierarchy for a single segment key.
+
+        Returns (model, actual_segment) on success, or None if the
+        entire chain is exhausted without finding a model.
+        """
+        current_key = start_key
 
         while True:
             # Check cache first
@@ -539,7 +829,7 @@ class PropertyPredictor:
                 logger.info(
                     "Model cache hit for segment '%s' (requested '%s')",
                     current_key,
-                    segment_key,
+                    original_key,
                 )
                 return model, current_key
 
@@ -550,7 +840,7 @@ class PropertyPredictor:
                 logger.info(
                     "Loaded model for segment '%s' from disk (requested '%s')",
                     current_key,
-                    segment_key,
+                    original_key,
                 )
                 return model, current_key
             except FileNotFoundError:
@@ -560,11 +850,7 @@ class PropertyPredictor:
             fallback_key = SubRegionEngine.get_fallback_segment(current_key)
             if fallback_key == current_key:
                 # Reached the top of the hierarchy with no model
-                logger.warning(
-                    "No model found at any fallback level for segment '%s'",
-                    segment_key,
-                )
-                return None, "none"
+                return None
 
             logger.info(
                 "No model for segment '%s'; falling back to '%s'",
@@ -618,9 +904,37 @@ class PropertyPredictor:
                 )
                 return float(lower_arr[0]), float(upper_arr[0])
             except (ValueError, KeyError) as exc:
-                logger.warning(
-                    "Quantile prediction failed for '%s': %s", segment_key, exc,
-                )
+                if "categorical_feature" in str(exc):
+                    # Same categorical mismatch — convert to numeric
+                    logger.warning(
+                        "Quantile categorical mismatch for '%s' — "
+                        "falling back to numeric encoding",
+                        segment_key,
+                    )
+                    numeric_df = features_df.copy()
+                    for col in numeric_df.columns:
+                        col_dtype = numeric_df[col].dtype
+                        if isinstance(col_dtype, pd.CategoricalDtype):
+                            numeric_df[col] = numeric_df[col].cat.codes.astype(float)
+                        elif col_dtype == object or pd.api.types.is_string_dtype(col_dtype):
+                            numeric_df[col] = pd.Categorical(numeric_df[col]).codes.astype(float)
+                        elif col_dtype == bool or col_dtype == "boolean":
+                            numeric_df[col] = numeric_df[col].astype(float)
+                    try:
+                        lower_arr, upper_arr = self.quantile_trainer.predict_intervals(
+                            q_models, pd.DataFrame(numeric_df.values, columns=numeric_df.columns),
+                            confidence_level=confidence_level,
+                        )
+                        return float(lower_arr[0]), float(upper_arr[0])
+                    except Exception as exc2:
+                        logger.warning(
+                            "Quantile prediction still failed for '%s': %s",
+                            segment_key, exc2,
+                        )
+                else:
+                    logger.warning(
+                        "Quantile prediction failed for '%s': %s", segment_key, exc,
+                    )
 
         return 0.0, 0.0
 
@@ -655,8 +969,20 @@ class PropertyPredictor:
 
             features_df = pd.DataFrame([features_row])
 
+            # Convert categoricals to numeric codes to avoid LightGBM
+            # categorical mismatch errors during SHAP computation
+            for col in features_df.columns:
+                col_dtype = features_df[col].dtype
+                if isinstance(col_dtype, pd.CategoricalDtype):
+                    features_df[col] = features_df[col].cat.codes.astype(float)
+                elif col_dtype == object or pd.api.types.is_string_dtype(col_dtype):
+                    features_df[col] = pd.Categorical(features_df[col]).codes.astype(float)
+                elif col_dtype == bool or col_dtype == "boolean":
+                    features_df[col] = features_df[col].astype(float)
+
+            # Use numpy array to fully bypass pandas categorical validation
             explainer = shap.TreeExplainer(model)
-            shap_values = explainer.shap_values(features_df)
+            shap_values = explainer.shap_values(features_df.values)
 
             # shap_values is (1, n_features) array
             shap_dict = dict(zip(model_features, shap_values[0]))
@@ -875,16 +1201,222 @@ class PropertyPredictor:
                 len(properties_df),
             )
 
-        # Fall back to constructing minimal property data
-        property_data: dict = {
-            "pid": pid or "unknown",
-            "latitude": lat or 0.0,
-            "longitude": lon or 0.0,
-            "address": address or "",
-            "property_type": property_type or "detached",
-        }
+        # Try address-based matching before falling back to empty data.
+        # Parse the address to extract civic number and street name, then
+        # find the closest property on that street in our database.
+        if (
+            address
+            and properties_df is not None
+            and not properties_df.empty
+            and "street_name" in properties_df.columns
+        ):
+            import re
 
-        # Try to infer neighbourhood from lat/lon using properties_df
+            addr_upper = address.upper().strip()
+            # Extract civic number, optional unit, and street.
+            # Handles multiple formats:
+            #   "1858 West 5th Avenue #302, Vancouver, BC"  (civic street #unit)
+            #   "6149 Fremlin Street, Vancouver, BC"         (civic street)
+            #   "608 - 2228 W Broadway, Vancouver, BC"       (unit - civic street)
+            #   "PH5 - 2088 W 11th Avenue, Vancouver, BC"   (unit - civic street)
+
+            # Format 1: "UNIT - CIVIC STREET" (common on listing sites)
+            m_unit_first = re.match(
+                r"^(?:PH)?(\d+)\s*[-–]\s*(\d+)\s+(.+?)(?:,|\s+VANCOUVER)",
+                addr_upper,
+            )
+            # Format 2: "CIVIC STREET #UNIT" (standard)
+            m = re.match(
+                r"^(\d+)\s+(.+?)(?:\s*#(\d+))?(?:,|\s+VANCOUVER)",
+                addr_upper,
+            )
+
+            if m_unit_first:
+                target_unit = int(m_unit_first.group(1))
+                target_civic = int(m_unit_first.group(2))
+                raw_street = m_unit_first.group(3).strip()
+            elif m:
+                target_civic = int(m.group(1))
+                raw_street = m.group(2).strip()
+                target_unit = int(m.group(3)) if m.group(3) else None
+            else:
+                m = None  # will skip the matching block
+
+            if m_unit_first or m:
+                # Normalize common suffixes and cardinal directions
+                _SUFFIX_MAP = {
+                    "STREET": "ST", "AVENUE": "AVE", "DRIVE": "DR",
+                    "ROAD": "RD", "PLACE": "PL", "CRESCENT": "CRES",
+                    "BOULEVARD": "BLVD", "COURT": "CT", "WAY": "WAY",
+                    "LANE": "LANE", "TERRACE": "TERR", "CIRCLE": "CIR",
+                    # Cardinal directions (Google → BC Assessment)
+                    "WEST": "W", "EAST": "E", "NORTH": "N", "SOUTH": "S",
+                }
+                raw_street = re.sub(
+                    r"\b(" + "|".join(_SUFFIX_MAP.keys()) + r")\b",
+                    lambda x: _SUFFIX_MAP.get(x.group(0), x.group(0)),
+                    raw_street,
+                )
+                # Split into words and try matching street_name
+                street_words = raw_street.split()
+                street_col = properties_df["street_name"].fillna("")
+                street_mask = pd.Series(True, index=properties_df.index)
+                for word in street_words:
+                    pattern = r"(?:^|[\s\-])" + re.escape(word)
+                    street_mask = street_mask & street_col.str.contains(
+                        pattern, na=False, regex=True,
+                    )
+
+                street_matches = properties_df[street_mask]
+                if not street_matches.empty:
+                    # ---------------------------------------------------------
+                    # Strata unit matching: address has "#302" → match via
+                    # to_civic_number (street address) + from_civic_number (unit)
+                    # ---------------------------------------------------------
+                    if target_unit is not None and "to_civic_number" in street_matches.columns:
+                        to_c = street_matches["to_civic_number"].fillna(0).astype(int)
+                        from_c = street_matches["from_civic_number"].fillna(0).astype(int)
+                        unit_mask = (to_c == target_civic) & (from_c == target_unit)
+                        if unit_mask.any():
+                            unit_matches = street_matches[unit_mask]
+                            if len(unit_matches) > 1 and "tax_assessment_year" in unit_matches.columns:
+                                nearest_idx = unit_matches["tax_assessment_year"].fillna(0).idxmax()
+                            else:
+                                nearest_idx = unit_matches.index[0]
+                            property_data = street_matches.loc[nearest_idx].to_dict()
+                            if property_type:
+                                property_data["property_type"] = property_type
+                            if lat is not None:
+                                property_data["latitude"] = lat
+                            if lon is not None:
+                                property_data["longitude"] = lon
+                            property_data["address"] = address
+                            logger.info(
+                                "Resolved unit address '%s' to PID=%s",
+                                address, property_data.get("pid"),
+                            )
+                            return property_data
+
+                    # ---------------------------------------------------------
+                    # If a unit number was specified but no strata match was
+                    # found, the property likely isn't in BC Assessment data
+                    # yet (new build).  Do NOT fall back to a nearby detached
+                    # house — instead skip to the lat/lon stub with condo type.
+                    # ---------------------------------------------------------
+                    if target_unit is not None:
+                        logger.info(
+                            "Unit #%d at %d %s not found in data — "
+                            "new build; using synthetic condo record",
+                            target_unit, target_civic, raw_street,
+                        )
+                        inferred_type = property_type or "condo"
+                        # Build a synthetic property record.  Use the
+                        # condo property type (unit number implies strata)
+                        # and pull neighbourhood + median value from nearby
+                        # condos for comparable matching context.
+                        synth: dict = {
+                            "pid": "unknown",
+                            "latitude": lat or 0.0,
+                            "longitude": lon or 0.0,
+                            "address": address or "",
+                            "property_type": inferred_type,
+                            "_synthetic": True,
+                        }
+                        # Borrow neighbourhood from nearest street match
+                        hood_code = None
+                        if not street_matches.empty:
+                            ref = street_matches.iloc[0]
+                            for field in [
+                                "neighbourhood_code", "zoning_district",
+                            ]:
+                                if field in ref.index and pd.notna(ref.get(field)):
+                                    synth[field] = ref[field]
+                            hood_code = ref.get("neighbourhood_code")
+
+                        # Populate total_assessed_value with the median of
+                        # same-type same-neighbourhood properties so the
+                        # similarity scorer can find price-appropriate comps.
+                        if hood_code is not None and properties_df is not None:
+                            peers = properties_df[
+                                (properties_df["neighbourhood_code"].astype(str) == str(hood_code))
+                                & (properties_df["property_type"].astype(str) == str(inferred_type))
+                            ]
+                            if not peers.empty and "total_assessed_value" in peers.columns:
+                                median_val = peers["total_assessed_value"].median()
+                                synth["total_assessed_value"] = median_val
+                                synth["current_land_value"] = median_val * 0.4
+                                synth["current_improvement_value"] = median_val * 0.6
+                                logger.info(
+                                    "Synthetic record: using median assessed value "
+                                    "$%,.0f from %d %s peers in neighbourhood %s",
+                                    median_val, len(peers), inferred_type, hood_code,
+                                )
+                        return synth
+                    else:
+                        # ---------------------------------------------------------
+                        # Standard matching (no unit number): match by
+                        # to_civic_number first, then civic_number fallback
+                        # ---------------------------------------------------------
+                        to_c_col = street_matches.get(
+                            "to_civic_number",
+                            pd.Series(0, index=street_matches.index),
+                        ).fillna(0).astype(int)
+                        to_match = street_matches[to_c_col == target_civic]
+                        if not to_match.empty:
+                            if len(to_match) > 1 and "tax_assessment_year" in to_match.columns:
+                                nearest_idx = to_match["tax_assessment_year"].fillna(0).idxmax()
+                            else:
+                                nearest_idx = to_match.index[0]
+                            property_data = street_matches.loc[nearest_idx].to_dict()
+                            if property_type:
+                                property_data["property_type"] = property_type
+                            if lat is not None:
+                                property_data["latitude"] = lat
+                            if lon is not None:
+                                property_data["longitude"] = lon
+                            property_data["address"] = address
+                            logger.info(
+                                "Resolved address '%s' via to_civic_number to PID=%s",
+                                address, property_data.get("pid"),
+                            )
+                            return property_data
+
+                        # Fallback: civic_number column (from_civic or to_civic)
+                        if "civic_number" in street_matches.columns:
+                            civic_col = street_matches["civic_number"].fillna(0).astype(int)
+                        else:
+                            from_c = street_matches["from_civic_number"].fillna(0).astype(int)
+                            to_c = street_matches.get("to_civic_number", pd.Series(0, index=street_matches.index)).fillna(0).astype(int)
+                            civic_col = from_c.where(from_c > 0, to_c)
+
+                        has_civic = civic_col > 0
+                        if has_civic.any():
+                            with_civic = street_matches[has_civic]
+                            dists = (civic_col[with_civic.index] - target_civic).abs()
+                            min_dist = dists.min()
+                            exact_matches = with_civic[dists == min_dist]
+                            if len(exact_matches) > 1 and "tax_assessment_year" in exact_matches.columns:
+                                nearest_idx = exact_matches["tax_assessment_year"].fillna(0).idxmax()
+                            else:
+                                nearest_idx = dists.idxmin()
+                        else:
+                            nearest_idx = street_matches.index[0]
+
+                        property_data = street_matches.loc[nearest_idx].to_dict()
+                        if property_type:
+                            property_data["property_type"] = property_type
+                        if lat is not None:
+                            property_data["latitude"] = lat
+                        if lon is not None:
+                            property_data["longitude"] = lon
+                        property_data["address"] = address
+                        logger.info(
+                            "Resolved address '%s' to nearest PID=%s on same street",
+                            address, property_data.get("pid"),
+                        )
+                        return property_data
+
+        # If we have lat/lon and properties have lat/lon, find nearest
         if (
             lat is not None
             and lon is not None
@@ -892,23 +1424,47 @@ class PropertyPredictor:
             and not properties_df.empty
             and "latitude" in properties_df.columns
             and "longitude" in properties_df.columns
-            and "neighbourhood_code" in properties_df.columns
         ):
-            # Find the nearest property and use its neighbourhood
-            dists = np.sqrt(
-                (properties_df["latitude"] - lat) ** 2
-                + (properties_df["longitude"] - lon) ** 2
-            )
-            nearest_idx = dists.idxmin()
-            nearest = properties_df.loc[nearest_idx]
-            property_data["neighbourhood_code"] = nearest.get(
-                "neighbourhood_code", ""
-            )
-            logger.info(
-                "Inferred neighbourhood_code=%s from nearest property",
-                property_data["neighbourhood_code"],
-            )
+            lat_col = properties_df["latitude"].fillna(0)
+            lon_col = properties_df["longitude"].fillna(0)
+            has_coords = (lat_col != 0) & (lon_col != 0)
+            if has_coords.any():
+                subset = properties_df[has_coords]
+                dists = np.sqrt(
+                    (subset["latitude"] - lat) ** 2
+                    + (subset["longitude"] - lon) ** 2
+                )
+                nearest_idx = dists.idxmin()
+                property_data = subset.loc[nearest_idx].to_dict()
+                if property_type:
+                    property_data["property_type"] = property_type
+                property_data["latitude"] = lat
+                property_data["longitude"] = lon
+                if address:
+                    property_data["address"] = address
+                logger.info(
+                    "Resolved lat/lon to nearest PID=%s",
+                    property_data.get("pid"),
+                )
+                return property_data
 
+        # Last resort: minimal stub with neighbourhood from address heuristic
+        # Infer "condo" if the address contains a unit number (e.g. "#205")
+        inferred_type = property_type or "detached"
+        if not property_type and address and "#" in address:
+            inferred_type = "condo"
+
+        logger.warning(
+            "No property match found; using minimal stub (type=%s)",
+            inferred_type,
+        )
+        property_data: dict = {
+            "pid": pid or "unknown",
+            "latitude": lat or 0.0,
+            "longitude": lon or 0.0,
+            "address": address or "",
+            "property_type": inferred_type,
+        }
         return property_data
 
     def _build_market_context(
@@ -932,7 +1488,10 @@ class PropertyPredictor:
 
         context = {
             "neighbourhood_code": neighbourhood_code,
-            "neighbourhood_name": neighbourhood_code.replace("-", " ").title(),
+            "neighbourhood_name": _NEIGHBOURHOOD_NAMES.get(
+                str(neighbourhood_code),
+                str(neighbourhood_code).replace("-", " ").title(),
+            ),
             "median_assessed_value": 0.0,
             "yoy_change_pct": None,
             "interest_rate_5yr": None,
@@ -943,10 +1502,10 @@ class PropertyPredictor:
         if properties_df is None or properties_df.empty:
             return context
 
-        # Filter to same neighbourhood
+        # Filter to same neighbourhood (cast to string for type safety)
         if neighbourhood_code and "neighbourhood_code" in properties_df.columns:
             hood_df = properties_df[
-                properties_df["neighbourhood_code"] == neighbourhood_code
+                properties_df["neighbourhood_code"].astype(str) == str(neighbourhood_code)
             ]
         else:
             hood_df = properties_df
@@ -985,6 +1544,66 @@ class PropertyPredictor:
                 context["yoy_change_pct"] = round(float(yoy), 2)
 
         return context
+
+    @staticmethod
+    def assign_neighbourhood_from_latlon(
+        lat: float,
+        lon: float,
+        boundary_gdf,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Determine the correct neighbourhood using City of Vancouver boundaries.
+
+        Does a point-in-polygon test against the official local area
+        boundary GeoJSON to override BC Assessment's neighbourhood_code,
+        which is inconsistent with City boundaries for some areas.
+
+        Args:
+            lat: Latitude in decimal degrees.
+            lon: Longitude in decimal degrees.
+            boundary_gdf: GeoDataFrame of local area boundary polygons.
+
+        Returns:
+            Tuple of (neighbourhood_code, neighbourhood_name) if a match
+            is found, or (None, None) if no match.
+        """
+        if boundary_gdf is None or lat == 0.0 or lon == 0.0:
+            return None, None
+
+        try:
+            from shapely.geometry import Point
+
+            point = Point(lon, lat)  # shapely uses (x=lon, y=lat)
+
+            for _, row in boundary_gdf.iterrows():
+                geom = row.get("geometry") or row.get("geom")
+                if geom is not None and geom.contains(point):
+                    # Extract the neighbourhood name from the GeoJSON
+                    area_name = (
+                        row.get("name")
+                        or row.get("Name")
+                        or row.get("NAME")
+                        or row.get("mapid")
+                        or ""
+                    )
+                    if not area_name:
+                        continue
+
+                    # Reverse-lookup: find the matching code in our mapping
+                    area_name_upper = area_name.strip().upper()
+                    for code, name in _NEIGHBOURHOOD_NAMES.items():
+                        if name.upper() == area_name_upper:
+                            return code, name
+                        # Fuzzy: check if the boundary name contains our name
+                        if area_name_upper in name.upper() or name.upper() in area_name_upper:
+                            return code, name
+
+                    # No code match — return name only
+                    return None, area_name.strip()
+
+        except Exception as exc:
+            logger.warning("Spatial neighbourhood assignment failed: %s", exc)
+
+        return None, None
 
     def get_loaded_model_count(self) -> int:
         """Return the number of models currently cached in memory.
