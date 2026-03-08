@@ -38,6 +38,13 @@ from src.daily_intel.storage.database import (
     get_connection,
 )
 from src.daily_intel.scrapers.mls_csv_ingester import watch_directory, ingest_csv
+
+
+def _count_all_listings() -> int:
+    conn = get_connection()
+    count = conn.execute("SELECT COUNT(*) FROM sold_listings").fetchone()[0]
+    conn.close()
+    return count
 from src.daily_intel.scrapers.permits import (
     fetch_vancouver_new_buildings,
     fetch_vancouver_demolitions,
@@ -195,9 +202,10 @@ def run_full_pipeline(no_email: bool = False):
     # Step 3: Fetch news
     news = step_fetch_news()
 
-    # Get ALL sold listings — full running record
-    sold = get_all_sold_listings()
-    logger.info(f"  Total sold listings in database: {len(sold)}")
+    # Get today's sold listings for the report (all data stays in DB for analysis)
+    today = date.today().isoformat()
+    sold = get_sold_listings_for_date(today)
+    logger.info(f"  Listings ingested today: {len(sold)} (total in DB: {_count_all_listings()})")
 
     # Step 4: Generate report
     html = step_generate_report(sold, permits, news)
@@ -240,7 +248,7 @@ def main():
         return
 
     if args.report_only:
-        sold = get_all_sold_listings()
+        sold = get_sold_listings_for_date(date.today().isoformat())
         news = get_recent_news(days=1)
         permits = fetch_vancouver_new_buildings(days_back=7) + fetch_vancouver_demolitions(days_back=7)
         html = step_generate_report(sold, permits, news)
