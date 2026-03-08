@@ -1,13 +1,12 @@
 """Match MLS sold listings to BC Assessment records and compute market ratios.
 
-Computes sale-to-assessment ratio (SAR) to show where the market actually trades
-relative to assessed values. SAR > 1.0 = selling above assessment, < 1.0 = below.
+Every property in Vancouver has a PID and assessed value. This module matches
+MLS sold listings to BC Assessment records.
 
-Address matching handles two cases:
-1. Strata (condos): MLS "601 1850 COMOX STREET" → BC Assessment unit 601 at building 1850
-   Match on civic_number=601, to_civic_number=1850, street_name=COMOX ST
-2. Detached: MLS "2168 E 8TH AVENUE" → BC Assessment "2168 8TH AVE E"
-   Match on normalized full_address
+Strategy:
+1. Build a comprehensive lookup from BC Assessment keyed on (civic_number, building_number, street)
+2. For each MLS address, try multiple normalized forms of the street name
+3. Handle edge cases: PH units, non-numeric units, compound street names, UBC lands
 """
 import logging
 import re
@@ -20,12 +19,7 @@ from src.daily_intel.storage.database import get_connection
 logger = logging.getLogger(__name__)
 
 _ASSESSMENT_DF: Optional[pd.DataFrame] = None
-
-_STREET_ABBREVS = {
-    "AVENUE": "AVE", "STREET": "ST", "DRIVE": "DR", "ROAD": "RD",
-    "BOULEVARD": "BLVD", "CRESCENT": "CRES", "PLACE": "PL",
-    "COURT": "CT", "LANE": "LN", "TERRACE": "TERR", "HIGHWAY": "HWY",
-}
+_STREET_LOOKUP: Optional[dict] = None
 
 
 def _load_assessments() -> pd.DataFrame:
@@ -34,7 +28,6 @@ def _load_assessments() -> pd.DataFrame:
         return _ASSESSMENT_DF
     try:
         df = pd.read_parquet("data/processed/enriched_properties.parquet")
-        df["street_name_norm"] = df["street_name"].str.upper().str.strip()
         _ASSESSMENT_DF = df
         logger.info(f"Loaded {len(df)} BC Assessment records")
         return df
@@ -43,73 +36,319 @@ def _load_assessments() -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _normalize_street(street: str) -> str:
-    """Normalize street name: abbreviate types, move direction to end."""
+def _build_street_alias_map(assessments: pd.DataFrame) -> dict:
+    """Build a map from various MLS street forms → canonical assessment street name.
+
+    E.g., "COMOX STREET" → "COMOX ST", "KINGSWAY WAY" → "KINGSWAY"
+    """
+    global _STREET_LOOKUP
+    if _STREET_LOOKUP is not None:
+        return _STREET_LOOKUP
+
+    canonical_streets = set(assessments["street_name"].dropna().str.upper().str.strip().unique())
+
+    alias_map = {}
+    # Each canonical street maps to itself
+    for s in canonical_streets:
+        alias_map[s] = s
+
+    # Generate aliases: AVENUE↔AVE, STREET↔ST, etc.
+    expansions = {
+        "AVE": "AVENUE", "ST": "STREET", "DR": "DRIVE", "RD": "ROAD",
+        "BLVD": "BOULEVARD", "CRES": "CRESCENT", "PL": "PLACE",
+        "CT": "COURT", "CRT": "COURT", "TERR": "TERRACE", "HWY": "HIGHWAY",
+        "SQ": "SQUARE",
+    }
+
+    for s in canonical_streets:
+        # Try expanding abbreviations
+        expanded = s
+        for abbr, full in expansions.items():
+            expanded = re.sub(r'\b' + abbr + r'\b', full, expanded)
+        if expanded != s:
+            alias_map[expanded] = s
+
+        # Try abbreviating full words
+        contracted = s
+        for abbr, full in expansions.items():
+            contracted = re.sub(r'\b' + full + r'\b', abbr, contracted)
+        if contracted != s:
+            alias_map[contracted] = s
+
+        # LANE — assessment keeps "LANE", MLS might use "LN"
+        if " LANE" in s:
+            alias_map[s.replace(" LANE", " LN")] = s
+
+        # Bare street names: if assessment has "KINGSWAY", map "KINGSWAY ST/WAY/etc"
+        if not re.search(r'\b(AVE|ST|DR|RD|BLVD|CRES|PL|CT|CRT|TERR|HWY|SQ|LANE|LN|WALK|WAY|MALL)\b', s):
+            for suffix in ["ST", "WAY", "STREET", "RD"]:
+                alias_map[f"{s} {suffix}"] = s
+
+        # "RIVER DISTRICT CROSS" → "RIVER DISTRICT CROSSING"
+        if s.endswith(" CROSS"):
+            alias_map[s + "ING"] = s
+
+    # Direction-first variants: "BROADWAY W" → also match "W BROADWAY", "W BROADWAY ST"
+    for s in canonical_streets:
+        dm = re.match(r'^(.+)\s+(E|W|N|S|NE|NW|SE|SW)$', s)
+        if dm:
+            base = dm.group(1)
+            dir_ = dm.group(2)
+            # "W BROADWAY", "W BROADWAY ST", "W BROADWAY STREET"
+            alias_map[f"{dir_} {base}"] = s
+            for abbr, full in expansions.items():
+                if base.endswith(f" {abbr}"):
+                    expanded_base = base[:-len(abbr)] + full
+                    alias_map[f"{dir_} {expanded_base}"] = s
+
+    # Direction between ordinal and type: "13TH E AVE" → "13TH AVE E"
+    for s in canonical_streets:
+        dm = re.match(r'^(\d+\w+)\s+(AVE|ST|DR|BLVD|CRES|RD)\s+(E|W|N|S)$', s)
+        if dm:
+            alt = f"{dm.group(1)} {dm.group(3)} {dm.group(2)}"
+            alias_map[alt] = s
+            # Also with full word
+            for abbr, full in expansions.items():
+                if dm.group(2) == abbr:
+                    alias_map[f"{dm.group(1)} {dm.group(3)} {full}"] = s
+
+    _STREET_LOOKUP = alias_map
+    return alias_map
+
+
+def _normalize_mls_street(street: str, alias_map: dict) -> list[str]:
+    """Convert an MLS street name to assessment canonical form(s).
+
+    Tries multiple normalization strategies and returns matching assessment streets.
+    """
     s = street.upper().strip()
-    for full, abbr in _STREET_ABBREVS.items():
-        s = s.replace(full, abbr)
-    return s
+    candidates = set()
+
+    # Strategy 1: Direct lookup
+    if s in alias_map:
+        candidates.add(alias_map[s])
+
+    # Strategy 2: Move direction from start to end
+    # "E 8TH AVE" → "8TH AVE E"
+    dm = re.match(r'^(E|W|N|S|NE|NW|SE|SW)\s+(.+)$', s)
+    if dm:
+        moved = f"{dm.group(2)} {dm.group(1)}"
+        if moved in alias_map:
+            candidates.add(alias_map[moved])
+        # Also try with abbreviation
+        for trial in _expand_contract(moved):
+            if trial in alias_map:
+                candidates.add(alias_map[trial])
+
+    # Strategy 3: Try all abbreviation/expansion variants
+    for trial in _expand_contract(s):
+        if trial in alias_map:
+            candidates.add(alias_map[trial])
+        # Also try with direction moved
+        dm2 = re.match(r'^(E|W|N|S|NE|NW|SE|SW)\s+(.+)$', trial)
+        if dm2:
+            moved2 = f"{dm2.group(2)} {dm2.group(1)}"
+            if moved2 in alias_map:
+                candidates.add(alias_map[moved2])
+
+    # Strategy 4: Fix ordinal — "38 AVE" → "38TH AVE"
+    fixed = _fix_ordinal(s)
+    if fixed != s:
+        for trial in [fixed] + list(_expand_contract(fixed)):
+            dm3 = re.match(r'^(E|W|N|S)\s+(.+)$', trial)
+            if dm3:
+                trial = f"{dm3.group(2)} {dm3.group(1)}"
+            if trial in alias_map:
+                candidates.add(alias_map[trial])
+
+    return list(candidates) if candidates else [s]
+
+
+def _expand_contract(s: str) -> list[str]:
+    """Generate abbreviation variants of a street name."""
+    abbrevs = {
+        "AVENUE": "AVE", "STREET": "ST", "DRIVE": "DR", "ROAD": "RD",
+        "BOULEVARD": "BLVD", "CRESCENT": "CRES", "PLACE": "PL",
+        "COURT": "CT", "TERRACE": "TERR", "HIGHWAY": "HWY", "SQUARE": "SQ",
+        "LANE": "LN",
+    }
+    results = []
+    # Try abbreviating
+    contracted = s
+    for full, abbr in abbrevs.items():
+        contracted = re.sub(r'\b' + full + r'\b', abbr, contracted)
+    if contracted != s:
+        results.append(contracted)
+    # Try expanding
+    expanded = s
+    for full, abbr in abbrevs.items():
+        expanded = re.sub(r'\b' + abbr + r'\b', full, expanded)
+    if expanded != s:
+        results.append(expanded)
+    return results
+
+
+def _fix_ordinal(s: str) -> str:
+    """Fix missing ordinal suffixes: '38 AVE' → '38TH AVE', '1 AVE' → '1ST AVE'."""
+    def _add_suffix(m):
+        n = int(m.group(1))
+        rest = m.group(2)
+        if n % 100 in (11, 12, 13):
+            suf = "TH"
+        elif n % 10 == 1:
+            suf = "ST"
+        elif n % 10 == 2:
+            suf = "ND"
+        elif n % 10 == 3:
+            suf = "RD"
+        else:
+            suf = "TH"
+        return f"{n}{suf} {rest}"
+    return re.sub(r'\b(\d+)\s+(AVE|AVENUE|ST|STREET)\b', _add_suffix, s)
 
 
 def _parse_mls_address(addr: str) -> dict:
-    """Parse MLS address into components.
+    """Parse MLS address into components."""
+    raw = addr.upper().strip()
 
-    Returns dict with keys: unit, building_num, street, is_strata, full_normalized
-    """
-    addr = addr.upper().strip()
-    for full, abbr in _STREET_ABBREVS.items():
-        addr = re.sub(r'\b' + full + r'\b', abbr, addr)
+    # Merge PH/TH + space + number: "PH 401" → "PH401"
+    norm = re.sub(r'\b(PH|TH)\s+(\d)', r'\1\2', raw)
 
-    # Move direction from middle to end of street name for any address component
-    def _fix_direction(street: str) -> str:
-        m = re.match(r"^(E|W|N|S)\s+(.+)$", street)
-        if m:
-            return f"{m.group(2)} {m.group(1)}"
-        return street
-
-    # Strata pattern: "601 1850 COMOX ST" -> unit=601, building=1850, street=COMOX ST
-    strata_match = re.match(r"^(\d+)\s+(\d+)\s+(.+)$", addr)
-    if strata_match:
-        street = _fix_direction(strata_match.group(3).strip())
+    # Pattern 1: unit building street — strata
+    # "601 1850 COMOX STREET", "PH1 688 E 17TH AVENUE", "8A 199 DRAKE STREET"
+    m = re.match(r'^([A-Z]*\d+[A-Z]*)\s+(\d+)\s+(.+)$', norm)
+    if m:
+        unit_str = m.group(1)
+        bldg = int(m.group(2))
+        street = m.group(3).strip()
+        unit_num = re.sub(r'[^0-9]', '', unit_str)
         return {
-            "unit": int(strata_match.group(1)),
-            "building_num": int(strata_match.group(2)),
-            "street": street,
+            "unit_str": unit_str,
+            "unit_int": int(unit_num) if unit_num else None,
+            "building_num": bldg,
+            "street_raw": street,
             "is_strata": True,
-            "full_normalized": addr,
         }
 
-    # Detached with direction: "2168 E 8TH AVE" -> "2168 8TH AVE E"
-    dir_match = re.match(r"^(\d+)\s+(E|W|N|S)\s+(.+)$", addr)
-    if dir_match:
-        normalized = f"{dir_match.group(1)} {dir_match.group(3)} {dir_match.group(2)}"
+    # Pattern 2: direction number street — detached
+    # "2432 W 49TH AVENUE" or "2168 E 8TH AVENUE"
+    dm = re.match(r'^(\d+)\s+(E|W|N|S|NE|NW|SE|SW)\s+(.+)$', norm)
+    if dm:
         return {
-            "unit": None,
-            "building_num": int(dir_match.group(1)),
-            "street": f"{dir_match.group(3)} {dir_match.group(2)}",
+            "unit_str": None, "unit_int": None,
+            "building_num": int(dm.group(1)),
+            "street_raw": f"{dm.group(2)} {dm.group(3).strip()}",
             "is_strata": False,
-            "full_normalized": normalized,
         }
 
-    # Plain address: "868 KINGSWAY"
-    plain_match = re.match(r"^(\d+)\s+(.+)$", addr)
-    if plain_match:
+    # Pattern 3: number street — simple
+    pm = re.match(r'^(\d+)\s+(.+)$', norm)
+    if pm:
         return {
-            "unit": None,
-            "building_num": int(plain_match.group(1)),
-            "street": plain_match.group(2).strip(),
+            "unit_str": None, "unit_int": None,
+            "building_num": int(pm.group(1)),
+            "street_raw": pm.group(2).strip(),
             "is_strata": False,
-            "full_normalized": addr,
         }
 
     return {
-        "unit": None, "building_num": None, "street": addr,
-        "is_strata": False, "full_normalized": addr,
+        "unit_str": None, "unit_int": None, "building_num": None,
+        "street_raw": norm, "is_strata": False,
     }
 
 
+def _build_lookups(assessments: pd.DataFrame) -> dict:
+    """Build lookup indices from BC Assessment data."""
+    assessments = assessments.copy()
+    assessments["sn"] = assessments["street_name"].str.upper().str.strip()
+
+    strata = assessments[assessments["legal_type"] == "STRATA"].copy()
+
+    # Lookup 1: (unit_civic, building_to_civic, street) → assessment row
+    strata_exact = {}
+    for _, r in strata.iterrows():
+        tcn = r["to_civic_number"]
+        if pd.notna(tcn):
+            key = (int(r["civic_number"]), int(tcn), r["sn"])
+            if key not in strata_exact:
+                strata_exact[key] = r
+
+    # Lookup 2: (unit_civic, street) → list of assessment rows
+    strata_by_unit_street = {}
+    for _, r in strata.iterrows():
+        key = (int(r["civic_number"]), r["sn"])
+        if key not in strata_by_unit_street:
+            strata_by_unit_street[key] = []
+        strata_by_unit_street[key].append(r)
+
+    # Lookup 3: full_address → assessment row (for non-strata and fallback)
+    addr_lookup = {}
+    for _, r in assessments.iterrows():
+        fa = str(r["full_address"]).upper().strip()
+        if fa not in addr_lookup:
+            addr_lookup[fa] = r
+
+    # Street alias map
+    alias_map = _build_street_alias_map(assessments)
+
+    return {
+        "strata_exact": strata_exact,
+        "strata_by_unit_street": strata_by_unit_street,
+        "addr_lookup": addr_lookup,
+        "alias_map": alias_map,
+    }
+
+
+def _find_match(parsed: dict, lookups: dict) -> Optional[pd.Series]:
+    """Find the best BC Assessment match for a parsed MLS address."""
+    alias_map = lookups["alias_map"]
+    street_raw = parsed.get("street_raw", "")
+    canon_streets = _normalize_mls_street(street_raw, alias_map)
+
+    if parsed["is_strata"]:
+        unit = parsed["unit_int"]
+        bldg = parsed["building_num"]
+
+        for street in canon_streets:
+            # Try exact: (unit, building, street)
+            if unit is not None:
+                key = (unit, bldg, street)
+                if key in lookups["strata_exact"]:
+                    return lookups["strata_exact"][key]
+
+            # Try unit+street (building-agnostic)
+            if unit is not None:
+                key = (unit, street)
+                if key in lookups["strata_by_unit_street"]:
+                    matches = lookups["strata_by_unit_street"][key]
+                    if len(matches) == 1:
+                        return matches[0]
+                    # Multiple buildings — match by building number
+                    for m in matches:
+                        if pd.notna(m["to_civic_number"]) and int(m["to_civic_number"]) == bldg:
+                            return m
+                    return matches[0]  # best effort
+
+        # Fallback: building address as LAND parcel
+        for street in canon_streets:
+            fa = f"{bldg} {street}"
+            if fa in lookups["addr_lookup"]:
+                return lookups["addr_lookup"][fa]
+
+    else:
+        # Non-strata
+        bldg = parsed.get("building_num")
+        if bldg:
+            for street in canon_streets:
+                fa = f"{bldg} {street}"
+                if fa in lookups["addr_lookup"]:
+                    return lookups["addr_lookup"][fa]
+
+    return None
+
+
 def match_sales_to_assessments() -> pd.DataFrame:
-    """Match sold listings to BC Assessment records."""
+    """Match all sold listings to BC Assessment records."""
     assessments = _load_assessments()
     if assessments.empty:
         return pd.DataFrame()
@@ -123,82 +362,29 @@ def match_sales_to_assessments() -> pd.DataFrame:
     if sold.empty:
         return pd.DataFrame()
 
-    # Parse all MLS addresses
-    parsed = sold["address"].apply(_parse_mls_address).apply(pd.Series)
-    sold = pd.concat([sold, parsed], axis=1)
+    lookups = _build_lookups(assessments)
 
-    # Build assessment lookup indices
-    # For strata: index by (civic_number, to_civic_number, street_name_norm)
-    strata_mask = assessments["legal_type"] == "STRATA"
-    strata_df = assessments[strata_mask].copy()
-    strata_df["lookup_key"] = (
-        strata_df["civic_number"].astype(str) + "|" +
-        strata_df["to_civic_number"].fillna(0).astype(int).astype(str) + "|" +
-        strata_df["street_name_norm"]
-    )
-    strata_lookup = strata_df.drop_duplicates("lookup_key").set_index("lookup_key")
-
-    # For non-strata: index by full_address
-    non_strata_df = assessments[~strata_mask].copy()
-    non_strata_df["match_addr"] = non_strata_df["full_address"].str.upper().str.strip()
-    non_strata_lookup = non_strata_df.drop_duplicates("match_addr").set_index("match_addr")
-
-    # Match each listing
     assessed_values = []
     land_values = []
     improvement_values = []
-    bc_year_built = []
 
     for _, row in sold.iterrows():
-        match = None
-
-        if row["is_strata"] and pd.notna(row["unit"]):
-            # Convert to int (pandas may store as float due to NaN in other rows)
-            unit = int(row["unit"])
-            bldg = int(row["building_num"])
-            key = f"{unit}|{bldg}|{row['street']}"
-            if key in strata_lookup.index:
-                match = strata_lookup.loc[key]
-            else:
-                # Try with reversed street direction
-                street = row["street"]
-                dir_match = re.match(r"^(E|W|N|S)\s+(.+)$", street)
-                if dir_match:
-                    alt_street = f"{dir_match.group(2)} {dir_match.group(1)}"
-                    alt_key = f"{unit}|{bldg}|{alt_street}"
-                    if alt_key in strata_lookup.index:
-                        match = strata_lookup.loc[alt_key]
-                if match is None:
-                    dir_end = re.match(r"^(.+)\s+(E|W|N|S)$", street)
-                    if dir_end:
-                        alt_street = f"{dir_end.group(2)} {dir_end.group(1)}"
-                        alt_key = f"{unit}|{bldg}|{alt_street}"
-                        if alt_key in strata_lookup.index:
-                            match = strata_lookup.loc[alt_key]
-
-        if match is None:
-            # Try non-strata match on full normalized address
-            norm = row["full_normalized"]
-            if norm in non_strata_lookup.index:
-                match = non_strata_lookup.loc[norm]
+        parsed = _parse_mls_address(row["address"])
+        match = _find_match(parsed, lookups)
 
         if match is not None:
             assessed_values.append(match["total_assessed_value"])
             land_values.append(match["current_land_value"])
             improvement_values.append(match["current_improvement_value"])
-            bc_year_built.append(match.get("year_built"))
         else:
             assessed_values.append(None)
             land_values.append(None)
             improvement_values.append(None)
-            bc_year_built.append(None)
 
     sold["assessed_value"] = assessed_values
     sold["land_value"] = land_values
     sold["improvement_value"] = improvement_values
-    sold["bc_year_built"] = bc_year_built
 
-    # Compute sale-to-assessment ratio
     sold["sale_to_assessment_ratio"] = None
     mask = sold["assessed_value"].notna() & (sold["assessed_value"] > 0)
     sold.loc[mask, "sale_to_assessment_ratio"] = (
@@ -208,6 +394,10 @@ def match_sales_to_assessments() -> pd.DataFrame:
     matched = mask.sum()
     total = len(sold)
     logger.info(f"Matched {matched}/{total} sold listings to BC Assessment ({matched/total*100:.1f}%)")
+
+    unmatched = total - matched
+    if unmatched > 0:
+        logger.info(f"  {unmatched} unmatched (likely UBC/UEL lands or new construction not yet assessed)")
 
     return sold
 
@@ -239,7 +429,6 @@ def get_market_summary() -> dict:
     }
 
     if n_matched > 0:
-        # Per sub-area breakdown
         by_area = matched.groupby("sub_area_name").agg(
             count=("sale_to_assessment_ratio", "size"),
             median_sar=("sale_to_assessment_ratio", "median"),
@@ -258,7 +447,6 @@ def get_market_summary() -> dict:
             for area, row in by_area.iterrows()
         ]
 
-        # By month
         matched["sold_month"] = pd.to_datetime(
             matched["sold_date"], format="mixed", dayfirst=False
         ).dt.to_period("M").astype(str)
