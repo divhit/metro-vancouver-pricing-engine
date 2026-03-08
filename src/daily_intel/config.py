@@ -1,6 +1,10 @@
 """Configuration for daily market intelligence."""
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env from project root
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 # Project paths
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -53,12 +57,7 @@ NEWS_FEEDS = [
         "url": "https://dailyhive.com/feed/vancouver",
         "category": "news",
     },
-    {
-        "name": "GVR News",
-        "url": "https://www.gvrealtors.ca/feed",
-        "category": "market_stats",
-    },
-    {
+{
         "name": "Vancouver Sun Real Estate",
         "url": "https://vancouversun.com/category/business/real-estate/feed",
         "category": "news",

@@ -216,6 +216,7 @@ def main():
     parser = argparse.ArgumentParser(description="Daily Market Intelligence Report")
     parser.add_argument("--ingest-csv", action="store_true", help="Only ingest new CSV files")
     parser.add_argument("--ingest-file", type=str, help="Ingest a specific CSV file")
+    parser.add_argument("--prefetch", action="store_true", help="Only fetch permits + news (no CSV, no report)")
     parser.add_argument("--report-only", action="store_true", help="Only generate report from existing data")
     parser.add_argument("--no-email", action="store_true", help="Don't send email")
     args = parser.parse_args()
@@ -225,6 +226,13 @@ def main():
     if args.ingest_file:
         stats = ingest_csv(args.ingest_file)
         logger.info(f"Ingested: {stats}")
+        return
+
+    if args.prefetch:
+        logger.info("Prefetching permits + news...")
+        step_fetch_permits()
+        step_fetch_news()
+        logger.info("Prefetch complete — ready for CSV ingestion + report later.")
         return
 
     if args.ingest_csv:
