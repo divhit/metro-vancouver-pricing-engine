@@ -1,5 +1,6 @@
 """Ingest MLS Paragon CSV exports (sold listings for Van East/West)."""
 import csv
+import json
 import logging
 import re
 from datetime import date
@@ -10,7 +11,7 @@ from ..storage.database import get_connection
 
 logger = logging.getLogger(__name__)
 
-# Sub-area code to human-readable mapping
+# Sub-area code to human-readable mapping (Vancouver East & West only)
 SUB_AREA_MAP = {
     # Vancouver West
     "VVWDT": "Downtown", "VVWWE": "West End", "VVWCB": "Coal Harbour",
@@ -28,53 +29,34 @@ SUB_AREA_MAP = {
     "VVEMP": "Mount Pleasant", "VVEHA": "Hastings",
 }
 
-# Attached property columns
-ATTACHED_COLUMNS = [
-    "PicCount", "Pics", "ML #", "Status", "Address", "S/A", "Price",
-    "List Date", "DOM", "Tot BR", "Tot Baths", "TotFlArea", "Yr Blt",
-    "Age", "Locker", "TotalPrkng", "MaintFee", "TypeDwel", "Bylaw Restrictions",
-]
-
-# Detached property columns
-DETACHED_COLUMNS = [
-    "PicCount", "Pics", "ML #", "Status", "Address", "S/A", "Price",
-    "List Date", "DOM", "Tot BR", "Tot Baths", "TotFlArea", "Yr Blt",
-    "Age", "Frontage - Feet", "Depth", "#Kitchens", "TypeDwel", "Style of Home",
-]
-
-# Extended columns (when Aparna adds Sold Price + Sold Date)
-EXTENDED_COLUMNS_EXTRA = ["Sold Price", "Sold Date", "Area"]
-
 
 def _clean_price(price_str: str) -> Optional[int]:
     """Parse price strings like '$1,350,000' to integer."""
-    if not price_str:
+    if not price_str or not price_str.strip():
         return None
     cleaned = re.sub(r"[^\d.]", "", price_str)
     try:
-        return int(float(cleaned))
+        return int(float(cleaned)) if cleaned else None
     except (ValueError, TypeError):
         return None
 
 
-def _clean_number(val: str) -> Optional[int]:
-    """Parse numeric strings, handling commas."""
-    if not val or val.strip() == "":
+def _clean_int(val: str) -> Optional[int]:
+    if not val or not val.strip():
         return None
     cleaned = re.sub(r"[^\d.]", "", val)
     try:
-        return int(float(cleaned))
+        return int(float(cleaned)) if cleaned else None
     except (ValueError, TypeError):
         return None
 
 
 def _clean_float(val: str) -> Optional[float]:
-    """Parse float strings."""
-    if not val or val.strip() == "":
+    if not val or not val.strip():
         return None
     cleaned = re.sub(r"[^\d.]", "", val)
     try:
-        return float(cleaned)
+        return float(cleaned) if cleaned else None
     except (ValueError, TypeError):
         return None
 
@@ -90,19 +72,22 @@ def _detect_format(headers: list[str]) -> str:
 
 
 def _resolve_area(sub_area_code: str) -> str:
-    """Convert S/A code to readable area name."""
     return SUB_AREA_MAP.get(sub_area_code, sub_area_code)
 
 
-def _is_west_side(sub_area_code: str) -> bool:
-    """Check if sub-area is Vancouver West."""
-    return sub_area_code.startswith("VVW")
+def _side(sub_area_code: str) -> str:
+    if sub_area_code.startswith("VVW"):
+        return "Vancouver West"
+    elif sub_area_code.startswith("VVE"):
+        return "Vancouver East"
+    return "Other"
 
 
 def ingest_csv(csv_path: str, source_label: Optional[str] = None) -> dict:
     """Ingest a Paragon MLS CSV export into the database.
 
-    Returns summary stats about what was ingested.
+    Handles both attached (condo/townhome) and detached (house) formats.
+    Stores ALL fields from the CSV.
     """
     path = Path(csv_path)
     if not path.exists():
@@ -115,12 +100,12 @@ def ingest_csv(csv_path: str, source_label: Optional[str] = None) -> dict:
         reader = csv.DictReader(f)
         headers = reader.fieldnames or []
         fmt = _detect_format(headers)
-        logger.info(f"Detected format: {fmt} for {path.name} ({len(headers)} columns)")
+        logger.info(f"Detected format: {fmt} for {path.name} ({len(headers)} columns: {headers})")
 
         conn = get_connection()
         inserted = 0
+        updated = 0
         skipped = 0
-        rows = []
 
         for row in reader:
             mls_number = row.get("ML #", "").strip()
@@ -128,72 +113,83 @@ def ingest_csv(csv_path: str, source_label: Optional[str] = None) -> dict:
                 skipped += 1
                 continue
 
-            status = row.get("Status", "").strip()
             sub_area = row.get("S/A", "").strip()
             address = row.get("Address", "").strip()
-            price = _clean_price(row.get("Price", ""))
-            list_date = row.get("List Date", "").strip()
-            dom = _clean_number(row.get("DOM", ""))
-            bedrooms = _clean_number(row.get("Tot BR", ""))
-            bathrooms = _clean_number(row.get("Tot Baths", ""))
-            floor_area = _clean_number(row.get("TotFlArea", ""))
-            year_built = _clean_number(row.get("Yr Blt", ""))
+            status = row.get("Status", "").strip()
+
+            # Price field = sold price in these exports (Status=F means firm/sold)
+            sold_price = _clean_price(row.get("Sold Price") or row.get("Price", ""))
+            list_price = _clean_price(row.get("List Price", ""))
+
+            # Calculate price difference
+            price_diff = None
+            price_diff_pct = None
+            if sold_price and list_price and list_price > 0:
+                price_diff = sold_price - list_price
+                price_diff_pct = round(price_diff / list_price * 100, 1)
+
+            dom = _clean_int(row.get("DOM", ""))
+            days_on_mls = _clean_int(row.get("Days On MLS", ""))
+            bedrooms = _clean_int(row.get("Tot BR", ""))
+            bathrooms = _clean_int(row.get("Tot Baths", ""))
+            floor_area = _clean_int(row.get("TotFlArea", ""))
+            year_built = _clean_int(row.get("Yr Blt", ""))
+            age = _clean_int(row.get("Age", ""))
             type_dwel = row.get("TypeDwel", "").strip()
-
-            # Extended fields (if Aparna adds them)
-            sold_price = _clean_price(row.get("Sold Price", ""))
+            list_date = row.get("List Date", "").strip() or None
             sold_date = row.get("Sold Date", "").strip() or None
+            postal_code = row.get("Postal Code", "").strip() or None
+            zoning = row.get("Zoning", "").strip() or None
+            view = row.get("View - Specify", "").strip() or None
+            pic_count = _clean_int(row.get("PicCount", ""))
+            pic_url = row.get("Pics", "").strip() or None
 
-            # Format-specific fields
-            if fmt == "attached":
-                maint_fee = _clean_float(row.get("MaintFee", ""))
-                parking = _clean_number(row.get("TotalPrkng", ""))
-                locker = row.get("Locker", "").strip()
-                extra_json = f'{{"maint_fee": {maint_fee or "null"}, "parking": {parking or "null"}, "locker": "{locker}"}}'
-            elif fmt == "detached":
-                frontage = _clean_float(row.get("Frontage - Feet", ""))
-                depth = _clean_float(row.get("Depth", ""))
-                kitchens = _clean_number(row.get("#Kitchens", ""))
-                style = row.get("Style of Home", "").strip()
-                extra_json = f'{{"frontage": {frontage or "null"}, "depth": {depth or "null"}, "kitchens": {kitchens or "null"}, "style": "{style}"}}'
-            else:
-                extra_json = "{}"
+            # Attached-specific
+            locker = row.get("Locker", "").strip() or None
+            parking = _clean_int(row.get("TotalPrkng", ""))
+            maint_fee = _clean_float(row.get("MaintFee", ""))
+            bylaw = row.get("Bylaw Restrictions", "").strip() or None
+
+            # Detached-specific
+            frontage = _clean_float(row.get("Frontage - Feet", ""))
+            depth = _clean_float(row.get("Depth", ""))
+            kitchens = _clean_int(row.get("#Kitchens", ""))
+            style = row.get("Style of Home", "").strip() or None
 
             area_name = _resolve_area(sub_area)
-            side = "Vancouver West" if _is_west_side(sub_area) else "Vancouver East"
+            city = _side(sub_area)
 
             try:
+                # Use INSERT OR REPLACE to update if MLS number already exists
                 conn.execute("""
-                    INSERT OR IGNORE INTO sold_listings (
-                        mls_number, sold_date, entry_date, sold_price, listing_price,
-                        listing_price_orig, street_address, city, area_name, province,
-                        postal_code, bedroom_count, bathroom_count, house_size, lot_size,
-                        property_type, listing_agent, listing_brokerage, latitude, longitude,
-                        images_json, first_seen_date, raw_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT OR REPLACE INTO sold_listings (
+                        mls_number, status, address, sub_area, sub_area_name, city,
+                        postal_code, sold_price, list_price, price_diff, price_diff_pct,
+                        list_date, sold_date, dom, days_on_mls,
+                        bedrooms, bathrooms, floor_area, year_built, age,
+                        property_type, style, zoning, view,
+                        locker, parking, maint_fee, bylaw_restrictions,
+                        frontage, depth, kitchens,
+                        pic_count, pic_url, source_file, source_format, first_seen_date
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?,
+                        ?, ?, ?, ?,
+                        ?, ?, ?,
+                        ?, ?, ?, ?, ?
+                    )
                 """, (
-                    mls_number,
-                    sold_date,
-                    list_date if list_date else None,
-                    sold_price or price,  # Use sold_price if available, else list price
-                    price,
-                    price,
-                    address,
-                    side,
-                    area_name,
-                    "BC",
-                    None,  # postal code not in export
-                    bedrooms,
-                    bathrooms,
-                    floor_area,
-                    None,  # lot size not directly available
-                    type_dwel,
-                    None,  # agent not in export
-                    None,  # brokerage not in export
-                    None, None,  # lat/lon not in export
-                    row.get("Pics", ""),
-                    today,
-                    extra_json,
+                    mls_number, status, address, sub_area, area_name, city,
+                    postal_code, sold_price, list_price, price_diff, price_diff_pct,
+                    list_date, sold_date, dom, days_on_mls,
+                    bedrooms, bathrooms, floor_area, year_built, age,
+                    type_dwel, style, zoning, view,
+                    locker, parking, maint_fee, bylaw,
+                    frontage, depth, kitchens,
+                    pic_count, pic_url, source, fmt, today,
                 ))
                 inserted += 1
             except Exception as e:
@@ -227,23 +223,10 @@ def ingest_directory(directory: str, pattern: str = "ML_*.csv") -> list[dict]:
     return results
 
 
-def watch_directory(directory: str, pattern: str = "ML_*.csv"):
-    """Check for new CSV files and ingest them.
-
-    Tracks which files have been processed to avoid re-ingestion.
-    """
+def watch_directory(directory: str, pattern: str = "ML_*.csv") -> list[dict]:
+    """Check for new CSV files and ingest them. Tracks processed files."""
     dir_path = Path(directory)
     conn = get_connection()
-
-    # Create tracking table if needed
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS ingested_files (
-            file_path TEXT PRIMARY KEY,
-            ingested_at TEXT NOT NULL,
-            stats_json TEXT
-        )
-    """)
-    conn.commit()
 
     new_files = []
     for csv_file in sorted(dir_path.glob(pattern)):
@@ -257,11 +240,10 @@ def watch_directory(directory: str, pattern: str = "ML_*.csv"):
     results = []
     for csv_file in new_files:
         logger.info(f"New file detected: {csv_file.name}")
-        import json
         stats = ingest_csv(str(csv_file))
         conn.execute(
-            "INSERT INTO ingested_files (file_path, ingested_at, stats_json) VALUES (?, ?, ?)",
-            (str(csv_file), date.today().isoformat(), json.dumps(stats))
+            "INSERT OR REPLACE INTO ingested_files (file_path, ingested_at, row_count, stats_json) VALUES (?, ?, ?, ?)",
+            (str(csv_file), date.today().isoformat(), stats["inserted"], json.dumps(stats))
         )
         conn.commit()
         results.append(stats)

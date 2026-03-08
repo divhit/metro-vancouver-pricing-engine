@@ -1,66 +1,79 @@
-"""Generate HTML daily intelligence report for Aparna."""
+"""Generate HTML daily intelligence report for Aparna — Vancouver East & West."""
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Optional
-
-from ..storage.database import (
-    get_sold_listings_for_date,
-    get_recent_news,
-    get_connection,
-)
 
 logger = logging.getLogger(__name__)
 
 
 def _fmt_price(val) -> str:
-    """Format price as $1,350,000."""
-    if val is None:
-        return "N/A"
+    if val is None or val == 0:
+        return "—"
     return f"${int(val):,}"
 
 
 def _fmt_pct(val) -> str:
-    """Format percentage."""
     if val is None:
-        return "N/A"
-    return f"{val:+.1f}%"
+        return "—"
+    color = "#22543d" if val >= 0 else "#c53030"
+    arrow = "▲" if val > 0 else "▼" if val < 0 else "—"
+    return f'<span style="color:{color};font-weight:600">{arrow} {abs(val):.1f}%</span>'
 
 
-def _sold_vs_list_pct(sold_price, list_price) -> Optional[float]:
-    """Calculate sold vs list price percentage."""
-    if sold_price and list_price and list_price > 0:
-        return round((sold_price - list_price) / list_price * 100, 1)
-    return None
+def _fmt_num(val) -> str:
+    if val is None:
+        return "—"
+    return f"{int(val):,}"
+
+
+def _fmt_sqft(val) -> str:
+    if val is None:
+        return "—"
+    return f"{int(val):,} sqft"
+
+
+def _fmt_money(val) -> str:
+    if val is None:
+        return "—"
+    return f"${val:,.2f}"
+
+
+def _price_per_sqft(price, sqft) -> str:
+    if price and sqft and sqft > 0:
+        return f"${int(price / sqft):,}/sqft"
+    return "—"
 
 
 def generate_report(
     sold_listings: list[dict],
     new_permits: list[dict],
     news_articles: list[dict],
-    market_stats: Optional[dict] = None,
-    active_listing_changes: Optional[dict] = None,
     report_date: Optional[str] = None,
 ) -> str:
-    """Generate the full HTML morning briefing."""
-    today = report_date or date.today().strftime("%A, %B %d, %Y")
+    """Generate the full HTML morning briefing with ALL listing details."""
+    today_str = report_date or date.today().strftime("%A, %B %d, %Y")
 
-    # Categorize sold listings
-    attached_sold = [l for l in sold_listings if l.get("property_type") in
-                     ("Apartment/Condo", "Townhouse", "APT", "TWN")]
-    detached_sold = [l for l in sold_listings if l.get("property_type") in
-                     ("House", "HOUSE", "Single Family Residence", "HSE", "OTHER")]
-    other_sold = [l for l in sold_listings if l not in attached_sold and l not in detached_sold]
+    # Split by type
+    detached = [l for l in sold_listings if l.get("source_format") == "detached"
+                or l.get("property_type") in ("HOUSE", "House", "Single Family Residence")]
+    attached = [l for l in sold_listings if l not in detached]
 
-    # If we can't categorize by type, just show all
-    if not attached_sold and not detached_sold:
-        all_sold = sold_listings
-    else:
-        all_sold = None
+    # Split by side
+    van_east = [l for l in sold_listings if l.get("city") == "Vancouver East"]
+    van_west = [l for l in sold_listings if l.get("city") == "Vancouver West"]
 
-    # Categorize news
-    market_news = [a for a in news_articles if a.get("category") in ("market_stats", "market_analysis")]
-    dev_news = [a for a in news_articles if a.get("category") == "municipal"]
-    general_news = [a for a in news_articles if a.get("category") == "news"]
+    # Stats
+    total = len(sold_listings)
+    prices = [l["sold_price"] for l in sold_listings if l.get("sold_price")]
+    avg_price = sum(prices) / len(prices) if prices else 0
+    median_price = sorted(prices)[len(prices) // 2] if prices else 0
+    doms = [l["dom"] for l in sold_listings if l.get("dom") is not None]
+    avg_dom = sum(doms) / len(doms) if doms else 0
+    diffs = [l["price_diff_pct"] for l in sold_listings if l.get("price_diff_pct") is not None]
+    avg_diff = sum(diffs) / len(diffs) if diffs else 0
+    over_ask = len([d for d in diffs if d > 0])
+    under_ask = len([d for d in diffs if d < 0])
+    at_ask = len([d for d in diffs if d == 0])
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -68,158 +81,196 @@ def generate_report(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #f8f9fa; color: #1a1a1a; }}
-  .header {{ background: linear-gradient(135deg, #1a365d, #2d5a87); color: white; padding: 30px; border-radius: 12px; margin-bottom: 24px; }}
-  .header h1 {{ margin: 0 0 8px 0; font-size: 24px; }}
-  .header .date {{ opacity: 0.85; font-size: 14px; }}
-  .section {{ background: white; border-radius: 10px; padding: 24px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
-  .section h2 {{ margin: 0 0 16px 0; font-size: 18px; color: #1a365d; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px; }}
-  .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }}
-  .stat-card {{ background: #f0f4f8; border-radius: 8px; padding: 16px; text-align: center; }}
-  .stat-card .number {{ font-size: 28px; font-weight: 700; color: #1a365d; }}
-  .stat-card .label {{ font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }}
-  .listing {{ border-left: 3px solid #3182ce; padding: 12px 16px; margin-bottom: 12px; background: #f7fafc; border-radius: 0 6px 6px 0; }}
-  .listing .address {{ font-weight: 600; font-size: 15px; }}
-  .listing .details {{ font-size: 13px; color: #4a5568; margin-top: 4px; }}
-  .listing .price {{ font-size: 16px; font-weight: 700; color: #2d5a87; }}
-  .listing .price-change {{ font-size: 12px; padding: 2px 6px; border-radius: 4px; }}
-  .price-up {{ background: #c6f6d5; color: #22543d; }}
-  .price-down {{ background: #fed7d7; color: #742a2a; }}
-  .permit {{ padding: 10px 16px; margin-bottom: 8px; background: #fffbeb; border-left: 3px solid #d69e2e; border-radius: 0 6px 6px 0; }}
-  .permit .type {{ font-weight: 600; font-size: 13px; color: #744210; }}
-  .permit .address {{ font-size: 14px; }}
-  .permit .value {{ font-size: 13px; color: #4a5568; }}
-  .news-item {{ padding: 10px 0; border-bottom: 1px solid #e2e8f0; }}
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 16px; background: #f5f5f5; color: #1a1a1a; font-size: 14px; }}
+  .header {{ background: linear-gradient(135deg, #1a365d, #2d5a87); color: white; padding: 28px 24px; border-radius: 10px; margin-bottom: 20px; }}
+  .header h1 {{ font-size: 22px; margin-bottom: 4px; }}
+  .header .sub {{ opacity: 0.8; font-size: 13px; }}
+  .section {{ background: white; border-radius: 8px; padding: 20px; margin-bottom: 14px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }}
+  .section h2 {{ font-size: 16px; color: #1a365d; border-bottom: 2px solid #e2e8f0; padding-bottom: 6px; margin-bottom: 14px; }}
+  .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 14px; }}
+  .stat {{ background: #f7fafc; border-radius: 6px; padding: 12px; text-align: center; }}
+  .stat .n {{ font-size: 22px; font-weight: 700; color: #1a365d; }}
+  .stat .l {{ font-size: 11px; color: #718096; text-transform: uppercase; letter-spacing: 0.3px; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 12.5px; }}
+  th {{ background: #f7fafc; color: #4a5568; font-weight: 600; text-align: left; padding: 8px 6px; border-bottom: 2px solid #e2e8f0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap; }}
+  td {{ padding: 7px 6px; border-bottom: 1px solid #edf2f7; vertical-align: top; }}
+  tr:hover {{ background: #f7fafc; }}
+  .addr {{ font-weight: 600; color: #2d3748; }}
+  .area {{ font-size: 11px; color: #718096; }}
+  .price {{ font-weight: 700; color: #1a365d; white-space: nowrap; }}
+  .over {{ color: #22543d; font-weight: 600; }}
+  .under {{ color: #c53030; font-weight: 600; }}
+  .at {{ color: #718096; }}
+  .tag {{ display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }}
+  .tag-det {{ background: #ebf8ff; color: #2b6cb0; }}
+  .tag-apt {{ background: #faf5ff; color: #6b46c1; }}
+  .tag-twn {{ background: #f0fff4; color: #276749; }}
+  .tag-dup {{ background: #fffaf0; color: #c05621; }}
+  .permit {{ padding: 8px 12px; margin-bottom: 6px; background: #fffbeb; border-left: 3px solid #d69e2e; border-radius: 0 4px 4px 0; font-size: 13px; }}
+  .permit .ptype {{ font-weight: 600; font-size: 11px; color: #744210; text-transform: uppercase; }}
+  .news-item {{ padding: 8px 0; border-bottom: 1px solid #edf2f7; }}
   .news-item:last-child {{ border-bottom: none; }}
-  .news-item a {{ color: #2d5a87; text-decoration: none; font-weight: 500; }}
-  .news-item a:hover {{ text-decoration: underline; }}
-  .news-item .source {{ font-size: 12px; color: #718096; }}
-  .news-item .summary {{ font-size: 13px; color: #4a5568; margin-top: 4px; }}
-  .footer {{ text-align: center; padding: 20px; font-size: 12px; color: #a0aec0; }}
-  .badge {{ display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }}
-  .badge-sold {{ background: #e2e8f0; color: #2d3748; }}
-  .badge-new {{ background: #c6f6d5; color: #22543d; }}
-  .badge-demo {{ background: #fed7d7; color: #742a2a; }}
+  .news-item a {{ color: #2d5a87; text-decoration: none; font-weight: 500; font-size: 13px; }}
+  .news-item .src {{ font-size: 11px; color: #a0aec0; }}
+  .footer {{ text-align: center; padding: 16px; font-size: 11px; color: #a0aec0; }}
 </style>
 </head>
 <body>
 
 <div class="header">
   <h1>Daily Market Intelligence</h1>
-  <div class="date">{today} | Vancouver East & West</div>
+  <div class="sub">{today_str} — Vancouver East & West — Sold Listings, Permits & News</div>
 </div>
-"""
 
-    # --- MARKET SNAPSHOT ---
-    total_sold = len(sold_listings)
-    avg_price = sum(l.get("sold_price") or l.get("listing_price") or 0 for l in sold_listings) / max(total_sold, 1)
-
-    html += f"""
 <div class="section">
-  <h2>Market Snapshot</h2>
-  <div class="stat-grid">
-    <div class="stat-card">
-      <div class="number">{total_sold}</div>
-      <div class="label">New Solds Recorded</div>
-    </div>
-    <div class="stat-card">
-      <div class="number">{len(attached_sold)}</div>
-      <div class="label">Attached</div>
-    </div>
-    <div class="stat-card">
-      <div class="number">{len(detached_sold)}</div>
-      <div class="label">Detached</div>
-    </div>
-    <div class="stat-card">
-      <div class="number">{_fmt_price(avg_price)}</div>
-      <div class="label">Avg Sale Price</div>
-    </div>
+  <h2>Market Snapshot (Jan 1 – Today)</h2>
+  <div class="stats">
+    <div class="stat"><div class="n">{total}</div><div class="l">Total Sold</div></div>
+    <div class="stat"><div class="n">{len(van_east)}</div><div class="l">Van East</div></div>
+    <div class="stat"><div class="n">{len(van_west)}</div><div class="l">Van West</div></div>
+    <div class="stat"><div class="n">{len(detached)}</div><div class="l">Detached</div></div>
+    <div class="stat"><div class="n">{len(attached)}</div><div class="l">Attached</div></div>
+    <div class="stat"><div class="n">{_fmt_price(avg_price)}</div><div class="l">Avg Sold Price</div></div>
+    <div class="stat"><div class="n">{_fmt_price(median_price)}</div><div class="l">Median Price</div></div>
+    <div class="stat"><div class="n">{avg_dom:.0f}</div><div class="l">Avg DOM</div></div>
+    <div class="stat"><div class="n">{avg_diff:+.1f}%</div><div class="l">Avg vs Ask</div></div>
+    <div class="stat"><div class="n">{over_ask}</div><div class="l">Over Ask</div></div>
+    <div class="stat"><div class="n">{under_ask}</div><div class="l">Under Ask</div></div>
+    <div class="stat"><div class="n">{at_ask}</div><div class="l">At Ask</div></div>
   </div>
 </div>
 """
 
-    # --- SOLD LISTINGS ---
-    def _render_listings(listings, title, limit=10):
-        if not listings:
-            return ""
-        section = f'<div class="section"><h2>{title} ({len(listings)} total)</h2>'
-        for l in listings[:limit]:
-            price = l.get("sold_price") or l.get("listing_price") or 0
-            address = l.get("street_address", "Unknown")
-            area = l.get("area_name", "")
-            beds = l.get("bedroom_count") or "?"
-            baths = l.get("bathroom_count") or "?"
-            sqft = l.get("house_size")
-            sqft_str = f" | {sqft:,} sqft" if sqft else ""
-            ptype = l.get("property_type", "")
+    # --- DETACHED SOLD TABLE ---
+    if detached:
+        det_sorted = sorted(detached, key=lambda l: l.get("sold_price") or 0, reverse=True)
+        html += _render_table(det_sorted, "Detached Homes Sold", is_detached=True)
 
-            section += f"""
-  <div class="listing">
-    <div class="address">{address}</div>
-    <div class="details">{area} | {beds} bed / {baths} bath{sqft_str} | {ptype}</div>
-    <div class="price">{_fmt_price(price)}</div>
-  </div>"""
+    # --- ATTACHED SOLD TABLE ---
+    if attached:
+        att_sorted = sorted(attached, key=lambda l: l.get("sold_price") or 0, reverse=True)
+        html += _render_table(att_sorted, "Attached (Condos/Townhomes/Duplexes) Sold", is_detached=False)
 
-        if len(listings) > limit:
-            section += f'<p style="color:#718096;font-size:13px;">...and {len(listings) - limit} more</p>'
-        section += "</div>"
-        return section
-
-    if all_sold:
-        html += _render_listings(all_sold, "Sold Listings")
-    else:
-        if detached_sold:
-            html += _render_listings(
-                sorted(detached_sold, key=lambda l: l.get("sold_price") or l.get("listing_price") or 0, reverse=True),
-                "Detached Homes Sold"
-            )
-        if attached_sold:
-            html += _render_listings(
-                sorted(attached_sold, key=lambda l: l.get("sold_price") or l.get("listing_price") or 0, reverse=True),
-                "Attached (Condos/Townhomes) Sold"
-            )
-
-    # --- NEW DEVELOPMENTS & PERMITS ---
+    # --- PERMITS ---
     if new_permits:
-        html += '<div class="section"><h2>New Building Permits & Developments</h2>'
-        for p in new_permits[:10]:
+        html += '<div class="section"><h2>New Building Permits This Week</h2>'
+        for p in new_permits[:15]:
             ptype = p.get("type_of_work", "Permit")
-            badge_class = "badge-new" if "New" in ptype else "badge-demo" if "Demol" in ptype else "badge-sold"
             value = _fmt_price(p.get("project_value")) if p.get("project_value") else ""
-
-            html += f"""
-  <div class="permit">
-    <div class="type"><span class="badge {badge_class}">{ptype}</span></div>
-    <div class="address">{p.get("address", "N/A")}</div>
-    <div class="value">{p.get("project_description", "")[:120]} {f"| Value: {value}" if value else ""}</div>
-  </div>"""
+            desc = (p.get("project_description") or "")[:150]
+            html += f"""<div class="permit">
+  <div class="ptype">{ptype}</div>
+  <div><strong>{p.get("address", "")}</strong> {f"— {value}" if value else ""}</div>
+  <div style="color:#718096;font-size:12px">{desc}</div>
+</div>"""
         html += "</div>"
 
     # --- NEWS ---
-    all_news = market_news + dev_news + general_news
-    if all_news:
+    if news_articles:
         html += '<div class="section"><h2>Vancouver Real Estate News</h2>'
-        for a in all_news[:8]:
-            title = a.get("title", "")
-            url = a.get("url", "#")
-            source = a.get("feed_name", "")
-            summary = a.get("summary", "")[:200]
-
-            html += f"""
-  <div class="news-item">
-    <a href="{url}">{title}</a>
-    <div class="source">{source}</div>
-    {"<div class='summary'>" + summary + "...</div>" if summary else ""}
-  </div>"""
+        for a in news_articles[:10]:
+            html += f"""<div class="news-item">
+  <a href="{a.get("url", "#")}">{a.get("title", "")}</a>
+  <span class="src"> — {a.get("feed_name", "")}</span>
+</div>"""
         html += "</div>"
 
-    # --- FOOTER ---
-    html += f"""
-<div class="footer">
+    html += f"""<div class="footer">
   Generated {datetime.now().strftime("%Y-%m-%d %H:%M")} | Metro Vancouver Pricing Engine<br>
-  Data sources: MLS Paragon, City of Vancouver Open Data, STOREYS, Daily Hive, REBGV
+  Sources: MLS Paragon (Van East & West), City of Vancouver Open Data, STOREYS, Daily Hive, GVR
 </div>
-</body>
-</html>"""
+</body></html>"""
 
+    return html
+
+
+def _render_table(listings: list[dict], title: str, is_detached: bool) -> str:
+    """Render a full-detail listing table with ALL fields."""
+    count = len(listings)
+
+    html = f'<div class="section"><h2>{title} ({count})</h2>'
+    html += '<div style="overflow-x:auto"><table>'
+
+    if is_detached:
+        html += """<tr>
+  <th>MLS#</th><th>Address</th><th>Area</th><th>Sold $</th><th>List $</th>
+  <th>Diff</th><th>DOM</th><th>Bed</th><th>Bath</th><th>SqFt</th><th>$/SqFt</th>
+  <th>Yr Blt</th><th>Style</th><th>Frontage</th><th>Depth</th><th>Zoning</th>
+  <th>Postal</th>
+</tr>"""
+    else:
+        html += """<tr>
+  <th>MLS#</th><th>Address</th><th>Area</th><th>Sold $</th><th>List $</th>
+  <th>Diff</th><th>DOM</th><th>Bed</th><th>Bath</th><th>SqFt</th><th>$/SqFt</th>
+  <th>Yr Blt</th><th>Type</th><th>Maint Fee</th><th>Parking</th><th>Locker</th>
+</tr>"""
+
+    for l in listings:
+        mls = l.get("mls_number", "")
+        addr = l.get("address", "")
+        area = l.get("sub_area_name", "")
+        sold = l.get("sold_price")
+        ask = l.get("list_price")
+        diff_pct = l.get("price_diff_pct")
+        dom = l.get("dom")
+        beds = l.get("bedrooms")
+        baths = l.get("bathrooms")
+        sqft = l.get("floor_area")
+        yr = l.get("year_built")
+        ppsqft = _price_per_sqft(sold, sqft)
+
+        # Diff styling
+        if diff_pct is not None:
+            if diff_pct > 0:
+                diff_html = f'<span class="over">+{diff_pct:.1f}%</span>'
+            elif diff_pct < 0:
+                diff_html = f'<span class="under">{diff_pct:.1f}%</span>'
+            else:
+                diff_html = '<span class="at">0%</span>'
+        else:
+            diff_html = "—"
+
+        # Property type tag
+        ptype = l.get("property_type", "")
+        if "Apartment" in ptype or "Condo" in ptype:
+            tag = '<span class="tag tag-apt">APT</span>'
+        elif "Townhouse" in ptype:
+            tag = '<span class="tag tag-twn">TWN</span>'
+        elif "Duplex" in ptype or "1/2" in ptype:
+            tag = '<span class="tag tag-dup">DUP</span>'
+        elif "HOUSE" in ptype or "House" in ptype:
+            tag = '<span class="tag tag-det">DET</span>'
+        else:
+            tag = f'<span class="tag">{ptype[:6]}</span>'
+
+        html += "<tr>"
+        html += f'<td>{mls}</td>'
+        html += f'<td><span class="addr">{addr}</span><br><span class="area">{area}</span></td>'
+        html += f'<td>{l.get("city", "")[:6]}</td>'
+        html += f'<td class="price">{_fmt_price(sold)}</td>'
+        html += f'<td>{_fmt_price(ask)}</td>'
+        html += f'<td>{diff_html}</td>'
+        html += f'<td>{_fmt_num(dom)}</td>'
+        html += f'<td>{_fmt_num(beds)}</td>'
+        html += f'<td>{_fmt_num(baths)}</td>'
+        html += f'<td>{_fmt_sqft(sqft) if sqft else "—"}</td>'
+        html += f'<td>{ppsqft}</td>'
+        html += f'<td>{_fmt_num(yr)}</td>'
+
+        if is_detached:
+            html += f'<td>{l.get("style") or "—"}</td>'
+            html += f'<td>{l.get("frontage") or "—"}</td>'
+            html += f'<td>{l.get("depth") or "—"}</td>'
+            html += f'<td>{l.get("zoning") or "—"}</td>'
+            html += f'<td>{l.get("postal_code") or "—"}</td>'
+        else:
+            html += f'<td>{tag}</td>'
+            html += f'<td>{_fmt_money(l.get("maint_fee")) if l.get("maint_fee") else "—"}</td>'
+            html += f'<td>{_fmt_num(l.get("parking"))}</td>'
+            html += f'<td>{l.get("locker") or "—"}</td>'
+
+        html += "</tr>"
+
+    html += "</table></div></div>"
     return html

@@ -31,9 +31,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.daily_intel.config import REPORTS_DIR, INTEL_DIR
 from src.daily_intel.storage.database import (
     init_db,
-    store_sold_listings,
     store_news_articles,
     get_sold_listings_for_date,
+    get_all_sold_listings,
     get_recent_news,
     get_connection,
 )
@@ -195,16 +195,9 @@ def run_full_pipeline(no_email: bool = False):
     # Step 3: Fetch news
     news = step_fetch_news()
 
-    # Get today's sold listings from database
-    today = date.today().isoformat()
-    sold = get_sold_listings_for_date(today)
-    if not sold:
-        # If nothing new today, show recent
-        conn = get_connection()
-        sold = [dict(r) for r in conn.execute(
-            "SELECT * FROM sold_listings ORDER BY first_seen_date DESC LIMIT 20"
-        ).fetchall()]
-        conn.close()
+    # Get ALL sold listings — full running record
+    sold = get_all_sold_listings()
+    logger.info(f"  Total sold listings in database: {len(sold)}")
 
     # Step 4: Generate report
     html = step_generate_report(sold, permits, news)
@@ -214,7 +207,7 @@ def run_full_pipeline(no_email: bool = False):
 
     elapsed = (datetime.now() - start).total_seconds()
     logger.info(f"Pipeline complete in {elapsed:.1f}s")
-    logger.info(f"Report: {REPORTS_DIR / f'daily_intel_{today}.html'}")
+    logger.info(f"Report: {REPORTS_DIR / f'daily_intel_{date.today().isoformat()}.html'}")
 
     return html
 
@@ -239,14 +232,7 @@ def main():
         return
 
     if args.report_only:
-        today = date.today().isoformat()
-        sold = get_sold_listings_for_date(today)
-        if not sold:
-            conn = get_connection()
-            sold = [dict(r) for r in conn.execute(
-                "SELECT * FROM sold_listings ORDER BY first_seen_date DESC LIMIT 20"
-            ).fetchall()]
-            conn.close()
+        sold = get_all_sold_listings()
         news = get_recent_news(days=1)
         permits = fetch_vancouver_new_buildings(days_back=7) + fetch_vancouver_demolitions(days_back=7)
         html = step_generate_report(sold, permits, news)
