@@ -49,6 +49,7 @@ def generate_report(
     new_permits: list[dict],
     news_articles: list[dict],
     report_date: Optional[str] = None,
+    market_summary: Optional[dict] = None,
 ) -> str:
     """Generate the full HTML morning briefing with ALL listing details."""
     today_str = report_date or date.today().strftime("%A, %B %d, %Y")
@@ -141,6 +142,62 @@ def generate_report(
   </div>
 </div>
 """
+
+    # --- MARKET vs ASSESSMENT ---
+    if market_summary and market_summary.get("matched", 0) > 0:
+        ms = market_summary
+        sar = ms["overall_sar"]
+        sar_pct = (sar - 1) * 100
+        sar_color = "#22543d" if sar_pct >= 0 else "#c53030"
+        sar_arrow = "▲" if sar_pct > 0 else "▼"
+
+        html += f"""<div class="section">
+  <h2>Market vs BC Assessment</h2>
+  <p style="margin-bottom:12px;color:#4a5568;font-size:13px">
+    Matched {ms['matched']}/{ms['total_sales']} sold listings ({ms['match_rate']}%) to BC Assessment records.
+    Shows where the market actually trades relative to assessed values.
+  </p>
+  <div class="stats">
+    <div class="stat"><div class="n" style="color:{sar_color}">{sar:.3f}</div><div class="l">Median SAR</div></div>
+    <div class="stat"><div class="n">{_fmt_price(ms['avg_sold_price'])}</div><div class="l">Avg Sold Price</div></div>
+    <div class="stat"><div class="n">{_fmt_price(ms['avg_assessed'])}</div><div class="l">Avg Assessed</div></div>
+    <div class="stat"><div class="n" style="color:#22543d">{ms['pct_above_assessment']}%</div><div class="l">Above Assessment</div></div>
+    <div class="stat"><div class="n" style="color:#c53030">{ms['pct_below_assessment']}%</div><div class="l">Below Assessment</div></div>
+  </div>"""
+
+        # Monthly trend
+        if ms.get("by_month"):
+            html += """<h3 style="font-size:13px;color:#4a5568;margin:12px 0 8px">Monthly Trend (SAR)</h3>
+  <div style="overflow-x:auto"><table>
+  <tr><th>Month</th><th>Sales</th><th>SAR</th><th>vs Assessed</th><th>Avg Sold</th></tr>"""
+            for m in ms["by_month"]:
+                pct = (m["median_sar"] - 1) * 100
+                clr = "#22543d" if pct >= 0 else "#c53030"
+                arrow = "▲" if pct > 0 else "▼"
+                html += f"""<tr>
+  <td><strong>{m['month']}</strong></td><td>{m['count']}</td>
+  <td style="color:{clr};font-weight:700">{m['median_sar']:.3f}</td>
+  <td style="color:{clr}">{arrow} {abs(pct):.1f}%</td>
+  <td>{_fmt_price(m['avg_sold'])}</td></tr>"""
+            html += "</table></div>"
+
+        # By area
+        if ms.get("by_area"):
+            html += """<h3 style="font-size:13px;color:#4a5568;margin:12px 0 8px">By Neighbourhood</h3>
+  <div style="overflow-x:auto"><table>
+  <tr><th>Area</th><th>Sales</th><th>SAR</th><th>vs Assessed</th><th>Avg Sold</th><th>Avg Assessed</th></tr>"""
+            for a in ms["by_area"][:20]:
+                pct = (a["median_sar"] - 1) * 100
+                clr = "#22543d" if pct >= 0 else "#c53030"
+                arrow = "▲" if pct > 0 else "▼"
+                html += f"""<tr>
+  <td><strong>{a['area']}</strong></td><td>{a['count']}</td>
+  <td style="color:{clr};font-weight:700">{a['median_sar']:.3f}</td>
+  <td style="color:{clr}">{arrow} {abs(pct):.1f}%</td>
+  <td>{_fmt_price(a['avg_sold'])}</td><td>{_fmt_price(a['avg_assessed'])}</td></tr>"""
+            html += "</table></div>"
+
+        html += "</div>"
 
     # --- DETACHED SOLD TABLE ---
     if detached:

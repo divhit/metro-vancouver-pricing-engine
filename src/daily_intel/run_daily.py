@@ -38,6 +38,7 @@ from src.daily_intel.storage.database import (
     get_connection,
 )
 from src.daily_intel.scrapers.mls_csv_ingester import watch_directory, ingest_csv
+from src.daily_intel.analysis.market_vs_assessed import get_market_summary
 
 
 def _count_all_listings() -> int:
@@ -130,6 +131,7 @@ def step_generate_report(
     sold_listings: list[dict],
     permits: list[dict],
     news: list[dict],
+    market_summary: dict = None,
 ) -> str:
     """Step 4: Generate HTML report."""
     logger.info("=" * 60)
@@ -140,6 +142,7 @@ def step_generate_report(
         sold_listings=sold_listings,
         new_permits=permits,
         news_articles=news,
+        market_summary=market_summary,
     )
 
     # Save to file
@@ -207,8 +210,13 @@ def run_full_pipeline(no_email: bool = False):
     sold = get_sold_listings_for_date(today)
     logger.info(f"  Listings ingested today: {len(sold)} (total in DB: {_count_all_listings()})")
 
+    # Market vs Assessment analysis (uses ALL historical data)
+    logger.info("  Computing market vs assessment ratios...")
+    market_summary = get_market_summary()
+    logger.info(f"  Matched {market_summary.get('matched', 0)} sales to assessments (SAR: {market_summary.get('overall_sar', 'N/A')})")
+
     # Step 4: Generate report
-    html = step_generate_report(sold, permits, news)
+    html = step_generate_report(sold, permits, news, market_summary=market_summary)
 
     # Step 5: Send email
     step_send_email(html, no_email=no_email)
@@ -251,7 +259,8 @@ def main():
         sold = get_sold_listings_for_date(date.today().isoformat())
         news = get_recent_news(days=1)
         permits = fetch_vancouver_new_buildings(days_back=7) + fetch_vancouver_demolitions(days_back=7)
-        html = step_generate_report(sold, permits, news)
+        market_summary = get_market_summary()
+        html = step_generate_report(sold, permits, news, market_summary=market_summary)
         step_send_email(html, no_email=args.no_email)
         return
 
