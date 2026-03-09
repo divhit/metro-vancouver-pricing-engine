@@ -668,17 +668,42 @@ class PropertyPredictor:
         property_data: dict,
         features_dict: dict,
     ) -> tuple[float, str] | None:
-        """Try to predict using market price model (trained on sold prices).
+        """Predict market price using SAR model × assessed value.
 
-        Returns (estimate, model_info_string) or None if no market model available.
+        The SAR (Sale-to-Assessment Ratio) model predicts how much above or
+        below assessed value a property would sell for, based on neighbourhood
+        trends, property characteristics, and market conditions.
+
+        market_estimate = assessed_value × predicted_SAR
+
+        Returns (estimate, model_info_string) or None if unavailable.
         """
         ptype = property_data.get("property_type", "")
+        assessed_value = property_data.get("total_assessed_value", 0)
+
+        if not assessed_value or assessed_value <= 0:
+            logger.warning("No assessed value for market prediction")
+            return None
+
         result = self._load_market_model(ptype)
         if result is None:
             return None
 
         model, metadata = result
-        features_df = pd.DataFrame([features_dict])
+
+        # Check if this is a fallback (median SAR only, no trained model)
+        if metadata.get("fallback"):
+            median_sar = metadata.get("median_sar", 1.0)
+            market_estimate = float(assessed_value * median_sar)
+            info = (
+                f"market_{ptype}_fallback (SAR={median_sar:.3f}, "
+                f"n={metadata.get('n_samples', '?')})"
+            )
+            return market_estimate, info
+
+        # Build feature vector from property data (not the full features_dict
+        # which includes value-derived features we don't want)
+        features_df = pd.DataFrame([{**property_data, **features_dict}])
 
         # Align columns with model expectations
         model_feature_names = model.feature_name()
@@ -687,21 +712,33 @@ class PropertyPredictor:
                 features_df[feat] = np.nan
         features_df = features_df[model_feature_names]
 
-        # Convert all columns to numeric to avoid categorical/string issues.
-        # Parquet files may use Arrow-backed string arrays (not object dtype),
-        # so we must coerce every non-numeric column.
+        # Convert all columns to numeric
         for col in features_df.columns:
             if not pd.api.types.is_numeric_dtype(features_df[col]):
                 features_df[col] = pd.to_numeric(features_df[col], errors="coerce")
         features_arr = features_df.to_numpy(dtype=np.float64, na_value=np.nan)
 
         try:
-            log_pred = model.predict(features_arr)
-            market_estimate = float(np.expm1(log_pred[0]))
-            info = f"market_{ptype} (MAPE={metadata.get('cv_mape', '?')}%, n={metadata.get('n_samples', '?')})"
+            predicted_sar = float(model.predict(features_arr)[0])
+
+            # Clamp SAR to reasonable range (0.6–1.8)
+            predicted_sar = max(0.6, min(1.8, predicted_sar))
+
+            market_estimate = float(assessed_value * predicted_sar)
+            median_sar = metadata.get("median_sar", "?")
+            info = (
+                f"market_{ptype} (SAR={predicted_sar:.3f}, "
+                f"median={median_sar}, "
+                f"MAPE={metadata.get('cv_mape', '?'):.1f}%, "
+                f"n={metadata.get('n_samples', '?')})"
+            )
+            logger.info(
+                "SAR prediction: assessed=$%,.0f × SAR=%.3f = market=$%,.0f",
+                assessed_value, predicted_sar, market_estimate,
+            )
             return market_estimate, info
         except Exception as e:
-            logger.warning("Market model prediction failed for %s: %s", ptype, e)
+            logger.warning("Market SAR prediction failed for %s: %s", ptype, e)
             return None
 
     def _select_model(self, segment_key: str) -> tuple[Any, str]:
