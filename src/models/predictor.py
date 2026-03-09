@@ -348,31 +348,19 @@ class PropertyPredictor:
                         else:
                             features_df[col] = features_df[col].astype("category")
 
+            # Convert to numpy to avoid categorical/string issues with
+            # single-row prediction (e.g. tod_tier="none", building_age_bucket).
+            for col in features_df.columns:
+                col_dtype = features_df[col].dtype
+                if isinstance(col_dtype, pd.CategoricalDtype):
+                    features_df[col] = features_df[col].cat.codes.astype(float)
+                elif col_dtype == object or pd.api.types.is_string_dtype(col_dtype):
+                    features_df[col] = pd.to_numeric(features_df[col], errors="coerce")
+                elif col_dtype == bool or col_dtype == "boolean":
+                    features_df[col] = features_df[col].astype(float)
+
             # Point estimate: exp(model.predict(features))
-            try:
-                log_pred = model.predict(features_df)
-            except ValueError as e:
-                if "categorical_feature" in str(e):
-                    # Categorical mismatch — encode cats as integer codes and
-                    # pass as a raw numpy array to bypass LightGBM's pandas
-                    # categorical validation entirely.
-                    logger.warning(
-                        "Categorical mismatch for segment %s — falling back "
-                        "to numeric encoding",
-                        actual_segment,
-                    )
-                    numeric_df = features_df.copy()
-                    for col in numeric_df.columns:
-                        col_dtype = numeric_df[col].dtype
-                        if isinstance(col_dtype, pd.CategoricalDtype):
-                            numeric_df[col] = numeric_df[col].cat.codes.astype(float)
-                        elif col_dtype == object or pd.api.types.is_string_dtype(col_dtype):
-                            numeric_df[col] = pd.Categorical(numeric_df[col]).codes.astype(float)
-                        elif col_dtype == bool or col_dtype == "boolean":
-                            numeric_df[col] = numeric_df[col].astype(float)
-                    log_pred = model.predict(numeric_df.values)
-                else:
-                    raise
+            log_pred = model.predict(features_df.values)
             ml_estimate = float(np.expm1(log_pred[0]))
 
             # Confidence interval from quantile models
@@ -699,17 +687,13 @@ class PropertyPredictor:
                 features_df[feat] = np.nan
         features_df = features_df[model_feature_names]
 
-        # Convert to numpy to avoid categorical mismatch issues with
-        # LightGBM's Booster.predict — encode strings as NaN since
-        # single-row prediction can't reliably reconstruct training categories.
-        try:
-            features_arr = features_df.to_numpy(dtype=np.float64, na_value=np.nan)
-        except (ValueError, TypeError):
-            # Some columns may be strings — convert them to NaN
-            for col in features_df.columns:
-                if features_df[col].dtype == object:
-                    features_df[col] = pd.to_numeric(features_df[col], errors="coerce")
-            features_arr = features_df.to_numpy(dtype=np.float64, na_value=np.nan)
+        # Convert all columns to numeric to avoid categorical/string issues.
+        # Parquet files may use Arrow-backed string arrays (not object dtype),
+        # so we must coerce every non-numeric column.
+        for col in features_df.columns:
+            if not pd.api.types.is_numeric_dtype(features_df[col]):
+                features_df[col] = pd.to_numeric(features_df[col], errors="coerce")
+        features_arr = features_df.to_numpy(dtype=np.float64, na_value=np.nan)
 
         try:
             log_pred = model.predict(features_arr)
