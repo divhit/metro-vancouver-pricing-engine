@@ -794,8 +794,31 @@ class PropertyPredictor:
                 if not mkt.empty:
                     mkt = mkt.copy()
                     mkt["sar"] = mkt["sold_price"] / mkt["total_assessed_value"]
-                    # Filter outliers
+                    # Remove extreme outliers
                     mkt = mkt[(mkt["sar"] >= 0.5) & (mkt["sar"] <= 2.0)]
+
+                    # Remove IQR outliers within each neighbourhood+type
+                    keep_mask = pd.Series(True, index=mkt.index)
+                    for (h, p), grp in mkt.groupby(
+                        ["neighbourhood_code", "property_type"]
+                    ):
+                        if len(grp) >= 5:
+                            q1 = grp["sar"].quantile(0.25)
+                            q3 = grp["sar"].quantile(0.75)
+                            iqr = q3 - q1
+                            lo = q1 - 1.5 * iqr
+                            hi = q3 + 1.5 * iqr
+                            outlier_idx = grp[
+                                (grp["sar"] < lo) | (grp["sar"] > hi)
+                            ].index
+                            keep_mask.loc[outlier_idx] = False
+
+                    n_removed = (~keep_mask).sum()
+                    mkt = mkt[keep_mask]
+                    logger.info(
+                        "SAR cache: removed %d IQR outliers, %d clean sales remain",
+                        n_removed, len(mkt),
+                    )
 
                     # By neighbourhood + type
                     for (h, p), grp in mkt.groupby(

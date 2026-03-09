@@ -121,6 +121,25 @@ def prepare_sar_features(market_df: pd.DataFrame, property_type: str) -> tuple[p
     segment = segment[reasonable]
     y = y[reasonable]
 
+    # Remove IQR outliers within each neighbourhood
+    if "neighbourhood_code" in segment.columns:
+        keep = pd.Series(True, index=segment.index)
+        for hood, grp_idx in segment.groupby("neighbourhood_code").groups.items():
+            if len(grp_idx) >= 5:
+                grp_sar = y.loc[grp_idx]
+                q1 = grp_sar.quantile(0.25)
+                q3 = grp_sar.quantile(0.75)
+                iqr = q3 - q1
+                lo = q1 - 1.5 * iqr
+                hi = q3 + 1.5 * iqr
+                outliers = grp_sar[(grp_sar < lo) | (grp_sar > hi)].index
+                keep.loc[outliers] = False
+        n_iqr = (~keep).sum()
+        segment = segment[keep]
+        y = y[keep]
+        if n_iqr > 0:
+            logger.info(f"  Removed {n_iqr} IQR outliers within neighbourhoods")
+
     # Build feature matrix from available columns
     available = [f for f in SAR_FEATURES if f in segment.columns]
     X = segment[available].copy()
