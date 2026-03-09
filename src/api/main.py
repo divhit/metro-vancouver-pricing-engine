@@ -1108,14 +1108,6 @@ def _convert_prediction_result(result) -> PredictionResponse:
         for flag in result.risk_flags
     ]
 
-    # Build confidence interval
-    ci_lower, ci_upper = result.confidence_interval
-    confidence_interval = ConfidenceInterval(
-        lower=ci_lower,
-        upper=ci_upper,
-        level=0.80,
-    )
-
     # Build metadata
     metadata = PredictionMetadata(
         model_segment=result.model_segment,
@@ -1129,6 +1121,44 @@ def _convert_prediction_result(result) -> PredictionResponse:
     primary_estimate = result.point_estimate
     if result.market_estimate is not None:
         primary_estimate = result.market_estimate
+
+    # Build confidence interval — scale to match primary estimate
+    ci_lower, ci_upper = result.confidence_interval
+    if result.point_estimate > 0 and primary_estimate != result.point_estimate:
+        # CI was computed around the assessment model estimate; rescale
+        # to center around the market model estimate
+        scale = primary_estimate / result.point_estimate
+        ci_lower *= scale
+        ci_upper *= scale
+
+    # Ensure CI is sensible: brackets the estimate with reasonable width
+    ci_width_pct = (
+        (ci_upper - ci_lower) / primary_estimate * 100
+        if primary_estimate > 0 else 0
+    )
+    if (
+        ci_lower <= 0
+        or ci_upper <= 0
+        or ci_lower > primary_estimate
+        or ci_upper < primary_estimate
+        or ci_width_pct < 5  # absurdly narrow (< 5% spread)
+    ):
+        # Fallback: use MAPE-based interval from market model
+        mape_pct = 0.15  # default 15%
+        if result.market_model_info:
+            # Extract MAPE from info string like "market_detached (MAPE=9.22%, n=236)"
+            import re
+            m = re.search(r"MAPE=([\d.]+)%", result.market_model_info)
+            if m:
+                mape_pct = float(m.group(1)) / 100.0
+        ci_lower = primary_estimate * (1 - mape_pct)
+        ci_upper = primary_estimate * (1 + mape_pct)
+
+    confidence_interval = ConfidenceInterval(
+        lower=round(ci_lower, 2),
+        upper=round(ci_upper, 2),
+        level=0.80,
+    )
 
     return PredictionResponse(
         point_estimate=round(primary_estimate, 2),

@@ -1379,27 +1379,54 @@ class PropertyPredictor:
                             with_civic = street_matches[has_civic]
                             dists = (civic_col[with_civic.index] - target_civic).abs()
                             min_dist = dists.min()
-                            exact_matches = with_civic[dists == min_dist]
-                            if len(exact_matches) > 1 and "tax_assessment_year" in exact_matches.columns:
-                                nearest_idx = exact_matches["tax_assessment_year"].fillna(0).idxmax()
+
+                            # If civic number doesn't match exactly and we have
+                            # lat/lon, skip to lat/lon fallback — Google often
+                            # renumbers addresses differently from BC Assessment
+                            if min_dist > 0 and lat is not None and lon is not None:
+                                logger.info(
+                                    "Civic %d not found on %s (nearest: %d, off by %d) "
+                                    "— falling through to lat/lon match",
+                                    target_civic, raw_street,
+                                    int(civic_col[dists.idxmin()]), int(min_dist),
+                                )
+                                pass  # fall through to lat/lon fallback below
                             else:
-                                nearest_idx = dists.idxmin()
+                                exact_matches = with_civic[dists == min_dist]
+                                if len(exact_matches) > 1 and "tax_assessment_year" in exact_matches.columns:
+                                    nearest_idx = exact_matches["tax_assessment_year"].fillna(0).idxmax()
+                                else:
+                                    nearest_idx = dists.idxmin()
+
+                                property_data = street_matches.loc[nearest_idx].to_dict()
+                                if property_type:
+                                    property_data["property_type"] = property_type
+                                if lat is not None:
+                                    property_data["latitude"] = lat
+                                if lon is not None:
+                                    property_data["longitude"] = lon
+                                property_data["address"] = address
+                                logger.info(
+                                    "Resolved address '%s' to nearest PID=%s on same street",
+                                    address, property_data.get("pid"),
+                                )
+                                return property_data
                         else:
                             nearest_idx = street_matches.index[0]
 
-                        property_data = street_matches.loc[nearest_idx].to_dict()
-                        if property_type:
-                            property_data["property_type"] = property_type
-                        if lat is not None:
-                            property_data["latitude"] = lat
-                        if lon is not None:
-                            property_data["longitude"] = lon
-                        property_data["address"] = address
-                        logger.info(
-                            "Resolved address '%s' to nearest PID=%s on same street",
-                            address, property_data.get("pid"),
-                        )
-                        return property_data
+                            property_data = street_matches.loc[nearest_idx].to_dict()
+                            if property_type:
+                                property_data["property_type"] = property_type
+                            if lat is not None:
+                                property_data["latitude"] = lat
+                            if lon is not None:
+                                property_data["longitude"] = lon
+                            property_data["address"] = address
+                            logger.info(
+                                "Resolved address '%s' to PID=%s (first on street)",
+                                address, property_data.get("pid"),
+                            )
+                            return property_data
 
         # If we have lat/lon and properties have lat/lon, find nearest
         if (
@@ -1415,6 +1442,19 @@ class PropertyPredictor:
             has_coords = (lat_col != 0) & (lon_col != 0)
             if has_coords.any():
                 subset = properties_df[has_coords]
+
+                # If property_type is specified, prefer same-type matches
+                # within a tight radius (~100m ≈ 0.001 degrees)
+                if property_type and "property_type" in subset.columns:
+                    typed = subset[subset["property_type"] == property_type]
+                    if not typed.empty:
+                        typed_dists = np.sqrt(
+                            (typed["latitude"] - lat) ** 2
+                            + (typed["longitude"] - lon) ** 2
+                        )
+                        if typed_dists.min() < 0.002:  # ~200m
+                            subset = typed
+
                 dists = np.sqrt(
                     (subset["latitude"] - lat) ** 2
                     + (subset["longitude"] - lon) ** 2
@@ -1428,8 +1468,10 @@ class PropertyPredictor:
                 if address:
                     property_data["address"] = address
                 logger.info(
-                    "Resolved lat/lon to nearest PID=%s",
+                    "Resolved lat/lon to nearest PID=%s (type=%s, dist=%.5f)",
                     property_data.get("pid"),
+                    property_data.get("property_type"),
+                    float(dists.loc[nearest_idx]),
                 )
                 return property_data
 
