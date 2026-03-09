@@ -668,78 +668,164 @@ class PropertyPredictor:
         property_data: dict,
         features_dict: dict,
     ) -> tuple[float, str] | None:
-        """Predict market price using SAR model × assessed value.
+        """Predict market price using neighbourhood SAR × assessed value.
 
-        The SAR (Sale-to-Assessment Ratio) model predicts how much above or
-        below assessed value a property would sell for, based on neighbourhood
-        trends, property characteristics, and market conditions.
-
-        market_estimate = assessed_value × predicted_SAR
+        Strategy:
+        1. Look up neighbourhood + property_type median SAR from actual sales
+        2. If ML model available, blend it in (30% weight) for property-level
+           adjustment — but the neighbourhood SAR is the anchor (70% weight)
+        3. Multiply assessed_value × blended_SAR
 
         Returns (estimate, model_info_string) or None if unavailable.
         """
         ptype = property_data.get("property_type", "")
         assessed_value = property_data.get("total_assessed_value", 0)
+        hood = str(property_data.get("neighbourhood_code", ""))
 
         if not assessed_value or assessed_value <= 0:
             logger.warning("No assessed value for market prediction")
             return None
 
+        # Load neighbourhood SAR lookup (cached)
+        hood_sar, hood_n = self._get_neighbourhood_sar(hood, ptype)
+        citywide_sar, citywide_n = self._get_neighbourhood_sar("_all", ptype)
+
+        if hood_sar is None and citywide_sar is None:
+            return None
+
+        # Determine neighbourhood SAR with fallback to city-wide
+        if hood_sar is not None and hood_n >= 5:
+            local_sar = hood_sar
+            local_n = hood_n
+            sar_source = f"hood_{hood}"
+        elif hood_sar is not None and hood_n >= 2:
+            # Few local sales — blend with city-wide
+            local_sar = 0.5 * hood_sar + 0.5 * (citywide_sar or 1.0)
+            local_n = hood_n
+            sar_source = f"hood_{hood}_blended"
+        else:
+            local_sar = citywide_sar or 1.0
+            local_n = citywide_n or 0
+            sar_source = "citywide"
+
+        # Try ML model for property-level adjustment
+        ml_sar = None
         result = self._load_market_model(ptype)
-        if result is None:
-            return None
+        if result is not None:
+            model, metadata = result
 
-        model, metadata = result
+            if metadata.get("fallback"):
+                # No trained model — just use neighbourhood SAR
+                ml_sar = None
+            else:
+                features_df = pd.DataFrame([{**property_data, **features_dict}])
+                model_feature_names = model.feature_name()
+                for feat in model_feature_names:
+                    if feat not in features_df.columns:
+                        features_df[feat] = np.nan
+                features_df = features_df[model_feature_names]
 
-        # Check if this is a fallback (median SAR only, no trained model)
-        if metadata.get("fallback"):
-            median_sar = metadata.get("median_sar", 1.0)
-            market_estimate = float(assessed_value * median_sar)
-            info = (
-                f"market_{ptype}_fallback (SAR={median_sar:.3f}, "
-                f"n={metadata.get('n_samples', '?')})"
-            )
-            return market_estimate, info
+                for col in features_df.columns:
+                    if not pd.api.types.is_numeric_dtype(features_df[col]):
+                        features_df[col] = pd.to_numeric(
+                            features_df[col], errors="coerce",
+                        )
+                features_arr = features_df.to_numpy(
+                    dtype=np.float64, na_value=np.nan,
+                )
 
-        # Build feature vector from property data (not the full features_dict
-        # which includes value-derived features we don't want)
-        features_df = pd.DataFrame([{**property_data, **features_dict}])
+                try:
+                    raw_ml_sar = float(model.predict(features_arr)[0])
+                    # Clamp to reasonable range
+                    ml_sar = max(0.6, min(1.8, raw_ml_sar))
+                except Exception as e:
+                    logger.warning(
+                        "ML SAR prediction failed for %s: %s", ptype, e,
+                    )
 
-        # Align columns with model expectations
-        model_feature_names = model.feature_name()
-        for feat in model_feature_names:
-            if feat not in features_df.columns:
-                features_df[feat] = np.nan
-        features_df = features_df[model_feature_names]
+        # Blend: neighbourhood SAR is anchor (70%), ML is adjustment (30%)
+        if ml_sar is not None:
+            blended_sar = 0.70 * local_sar + 0.30 * ml_sar
+            blend_note = f"blend(hood={local_sar:.3f}×70% + ml={ml_sar:.3f}×30%)"
+        else:
+            blended_sar = local_sar
+            blend_note = f"{sar_source}={local_sar:.3f}"
 
-        # Convert all columns to numeric
-        for col in features_df.columns:
-            if not pd.api.types.is_numeric_dtype(features_df[col]):
-                features_df[col] = pd.to_numeric(features_df[col], errors="coerce")
-        features_arr = features_df.to_numpy(dtype=np.float64, na_value=np.nan)
+        market_estimate = float(assessed_value * blended_sar)
 
-        try:
-            predicted_sar = float(model.predict(features_arr)[0])
+        n_samples = local_n
+        if result and not metadata.get("fallback"):
+            n_samples = metadata.get("n_samples", local_n)
 
-            # Clamp SAR to reasonable range (0.6–1.8)
-            predicted_sar = max(0.6, min(1.8, predicted_sar))
+        info = (
+            f"market_{ptype} (SAR={blended_sar:.3f}, {blend_note}, "
+            f"n_local={local_n}, n_model={n_samples})"
+        )
+        logger.info(
+            "SAR prediction: assessed=$%,.0f × SAR=%.3f = market=$%,.0f [%s]",
+            assessed_value, blended_sar, market_estimate, blend_note,
+        )
+        return market_estimate, info
 
-            market_estimate = float(assessed_value * predicted_sar)
-            median_sar = metadata.get("median_sar", "?")
-            info = (
-                f"market_{ptype} (SAR={predicted_sar:.3f}, "
-                f"median={median_sar}, "
-                f"MAPE={metadata.get('cv_mape', '?'):.1f}%, "
-                f"n={metadata.get('n_samples', '?')})"
-            )
-            logger.info(
-                "SAR prediction: assessed=$%,.0f × SAR=%.3f = market=$%,.0f",
-                assessed_value, predicted_sar, market_estimate,
-            )
-            return market_estimate, info
-        except Exception as e:
-            logger.warning("Market SAR prediction failed for %s: %s", ptype, e)
-            return None
+    def _get_neighbourhood_sar(
+        self, hood: str, ptype: str,
+    ) -> tuple[float | None, int]:
+        """Get median SAR for a neighbourhood + property type from sales data.
+
+        Returns (median_sar, n_sales) or (None, 0) if no data.
+        Caches results so DB is only queried once per session.
+        """
+        cache_key = f"{hood}_{ptype}"
+        if not hasattr(self, "_sar_cache"):
+            self._sar_cache: dict[str, tuple[float | None, int]] = {}
+            self._sar_cache_loaded = False
+
+        if cache_key in self._sar_cache:
+            return self._sar_cache[cache_key]
+
+        # Build the full SAR cache on first call
+        if not self._sar_cache_loaded:
+            try:
+                from src.pipeline.sold_price_enrichment import (
+                    build_market_training_data,
+                )
+
+                mkt = build_market_training_data()
+                if not mkt.empty:
+                    mkt = mkt.copy()
+                    mkt["sar"] = mkt["sold_price"] / mkt["total_assessed_value"]
+                    # Filter outliers
+                    mkt = mkt[(mkt["sar"] >= 0.5) & (mkt["sar"] <= 2.0)]
+
+                    # By neighbourhood + type
+                    for (h, p), grp in mkt.groupby(
+                        ["neighbourhood_code", "property_type"]
+                    ):
+                        key = f"{h}_{p}"
+                        self._sar_cache[key] = (
+                            float(grp["sar"].median()),
+                            len(grp),
+                        )
+
+                    # City-wide by type
+                    for p, grp in mkt.groupby("property_type"):
+                        key = f"_all_{p}"
+                        self._sar_cache[key] = (
+                            float(grp["sar"].median()),
+                            len(grp),
+                        )
+
+                    logger.info(
+                        "Built SAR cache: %d neighbourhood-type combos from %d sales",
+                        len(self._sar_cache),
+                        len(mkt),
+                    )
+            except Exception as e:
+                logger.warning("Failed to build SAR cache: %s", e)
+
+            self._sar_cache_loaded = True
+
+        return self._sar_cache.get(cache_key, (None, 0))
 
     def _select_model(self, segment_key: str) -> tuple[Any, str]:
         """Select the best available model for a segment.
