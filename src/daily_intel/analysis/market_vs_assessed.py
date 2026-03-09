@@ -282,10 +282,15 @@ def _build_lookups(assessments: pd.DataFrame) -> dict:
         strata_by_unit_street[key].append(r)
 
     # Lookup 3: full_address → assessment row (for non-strata and fallback)
+    # Prefer STRATA over LAND when both exist at the same address (e.g. duplexes
+    # where the strata civic_number equals the building address — 2835 OLIVER CRES
+    # has both a LAND record for the full lot and a STRATA record for each half).
     addr_lookup = {}
     for _, r in assessments.iterrows():
         fa = str(r["full_address"]).upper().strip()
         if fa not in addr_lookup:
+            addr_lookup[fa] = r
+        elif r.get("legal_type") == "STRATA" and addr_lookup[fa].get("legal_type") == "LAND":
             addr_lookup[fa] = r
 
     # Street alias map
@@ -329,11 +334,15 @@ def _find_match(parsed: dict, lookups: dict) -> Optional[pd.Series]:
                             return m
                     return matches[0]  # best effort
 
-        # Fallback: building address as LAND parcel
+        # Fallback: building address — but only if it's a STRATA record
+        # (not a LAND parcel for the whole building, which would have a
+        # wildly different value than an individual unit)
         for street in canon_streets:
             fa = f"{bldg} {street}"
             if fa in lookups["addr_lookup"]:
-                return lookups["addr_lookup"][fa]
+                candidate = lookups["addr_lookup"][fa]
+                if candidate.get("legal_type") != "LAND":
+                    return candidate
 
     else:
         # Non-strata
