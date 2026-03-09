@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import math
+from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -131,8 +132,15 @@ class AssemblyPremiumCalculator:
         neighbourhood_code: Optional[str] = None,
         lot_frontage_ft: Optional[float] = None,
         is_corner: bool = False,
+        current_improvement_value: float = 0.0,
+        year_built: Optional[int] = None,
     ) -> tuple[float, str]:
         """Compute the assembly premium for a property.
+
+        Assembly premiums apply to undeveloped or under-developed land
+        that could be assembled for higher-density redevelopment. They
+        do NOT apply to recently-built properties that are already
+        developed.
 
         Args:
             lat: Property latitude
@@ -141,6 +149,11 @@ class AssemblyPremiumCalculator:
             neighbourhood_code: GVR sub-area code
             lot_frontage_ft: Lot frontage in feet (None if unknown)
             is_corner: Whether the property is a corner lot
+            current_improvement_value: Current improvement value ($).
+                Properties with substantial improvements are already
+                developed and not candidates for assembly.
+            year_built: Year the building was constructed. Recently-built
+                properties (within 10 years) are not assembly candidates.
 
         Returns:
             Tuple of (premium_pct, explanation)
@@ -151,6 +164,29 @@ class AssemblyPremiumCalculator:
 
         if corridor is None:
             return 0.0, "Property is not in a known assembly corridor — no premium"
+
+        # Guard: skip assembly premium for recently-built properties.
+        # A completed building is not a candidate for land assembly.
+        current_year = datetime.now().year
+        if year_built is not None:
+            try:
+                yb = int(year_built)
+                if yb >= current_year - 10:
+                    return 0.0, (
+                        f"Property in {corridor['name']} corridor but recently "
+                        f"built ({yb}) — assembly premium not applicable to "
+                        f"developed properties"
+                    )
+            except (ValueError, TypeError):
+                pass
+
+        # Guard: skip if substantial improvement value indicates developed
+        if current_improvement_value > 500_000:
+            return 0.0, (
+                f"Property in {corridor['name']} corridor but has substantial "
+                f"improvements (${current_improvement_value:,.0f}) — assembly "
+                f"premium not applicable to developed properties"
+            )
 
         premium = corridor["base_premium"]
         factors = [f"In {corridor['name']} corridor: base premium {corridor['base_premium']*100:.0f}%"]

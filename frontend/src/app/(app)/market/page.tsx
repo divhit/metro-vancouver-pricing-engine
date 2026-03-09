@@ -1,18 +1,21 @@
 "use client";
 
-import { Suspense, useEffect, useState, useMemo } from "react";
+import { Suspense, useEffect, useState, useMemo, useRef } from "react";
 import { useSearchParams } from "next/navigation";
-import { api, type MarketSummary } from "@/lib/api";
+import { api, type MarketSummary, type NeighbourhoodTrend } from "@/lib/api";
 import { formatCurrency, formatPercent, formatNumber } from "@/lib/format";
 import {
   BarChart,
   Bar,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
   Tooltip,
   ResponsiveContainer,
   CartesianGrid,
   Cell,
+  Legend,
 } from "recharts";
 
 const DEMO_SUMMARIES: MarketSummary[] = [
@@ -32,10 +35,10 @@ const DEMO_SUMMARIES: MarketSummary[] = [
 
 const PROPERTY_TYPES = ["all", "condo", "townhome", "detached"];
 const SORT_OPTIONS = [
-  { value: "name", label: "Name" },
   { value: "median_high", label: "Median (High to Low)" },
   { value: "median_low", label: "Median (Low to High)" },
-  { value: "yoy_high", label: "YoY Growth (High)" },
+  { value: "yoy_high", label: "YoY Growth (Highest)" },
+  { value: "name", label: "Alphabetical" },
   { value: "count", label: "Property Count" },
 ];
 
@@ -50,8 +53,10 @@ export default function MarketPage() {
 function MarketContent() {
   const searchParams = useSearchParams();
   const highlightCode = searchParams.get("neighbourhood");
+  const trendRef = useRef<HTMLDivElement>(null);
 
   const [summaries, setSummaries] = useState<MarketSummary[]>([]);
+  const [trends, setTrends] = useState<NeighbourhoodTrend[]>([]);
   const [loading, setLoading] = useState(true);
   const [usingDemo, setUsingDemo] = useState(false);
   const [selectedType, setSelectedType] = useState("all");
@@ -61,8 +66,12 @@ function MarketContent() {
   useEffect(() => {
     async function load() {
       try {
-        const s = await api.getMarketAll();
+        const [s, t] = await Promise.all([
+          api.getMarketAll(),
+          api.getMarketTrends(),
+        ]);
         setSummaries(s);
+        setTrends(t);
       } catch {
         setSummaries(DEMO_SUMMARIES);
         setUsingDemo(true);
@@ -72,6 +81,13 @@ function MarketContent() {
     }
     load();
   }, []);
+
+  useEffect(() => {
+    if (usingDemo) return;
+    api.getMarketTrends(selectedType === "all" ? undefined : selectedType)
+      .then(setTrends)
+      .catch(() => {});
+  }, [selectedType, usingDemo]);
 
   const getMedian = (s: MarketSummary) => {
     if (selectedType === "all") {
@@ -119,26 +135,59 @@ function MarketContent() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summaries, sortBy, selectedType]);
 
-  const chartData = sorted.map((s) => ({
-    name: s.neighbourhood_name.length > 14
-      ? s.neighbourhood_name.slice(0, 12) + "..."
-      : s.neighbourhood_name,
-    median: getMedian(s),
-    yoy: getYoy(s) ?? 0,
-    code: s.neighbourhood_code,
-  }));
+  // Sort trends in the same order as the sorted summaries
+  const sortedTrends = useMemo(() => {
+    const orderMap = new Map(sorted.map((s, i) => [s.neighbourhood_code, i]));
+    return [...trends]
+      .filter((t) => t.trends.length >= 2)
+      .sort((a, b) => {
+        const aIdx = orderMap.get(a.neighbourhood_code) ?? 999;
+        const bIdx = orderMap.get(b.neighbourhood_code) ?? 999;
+        return aIdx - bIdx;
+      });
+  }, [trends, sorted]);
+
+  const barChartData = useMemo(() => {
+    return sortedTrends.map((t) => {
+      const y2025 = t.trends.find((p) => p.year === 2025);
+      const y2026 = t.trends.find((p) => p.year === 2026);
+      return {
+        name: t.neighbourhood_name.length > 12
+          ? t.neighbourhood_name.slice(0, 10) + "\u2026"
+          : t.neighbourhood_name,
+        fullName: t.neighbourhood_name,
+        "2025": y2025?.median_value ?? 0,
+        "2026": y2026?.median_value ?? 0,
+        code: t.neighbourhood_code,
+      };
+    });
+  }, [sortedTrends]);
 
   const selectedSummary = selected
     ? summaries.find((s) => s.neighbourhood_code === selected)
     : null;
 
+  const selectedTrend = selected
+    ? trends.find((t) => t.neighbourhood_code === selected)
+    : null;
+
+  function handleSelect(code: string) {
+    const next = selected === code ? null : code;
+    setSelected(next);
+    if (next && trendRef.current) {
+      setTimeout(() => {
+        trendRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }, 50);
+    }
+  }
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex items-end justify-between">
         <div>
           <h1
-            className="text-3xl text-sand-900 tracking-tight"
+            className="text-3xl text-sand-900 tracking-tight font-medium"
             style={{ fontFamily: "var(--font-display)" }}
           >
             Market Explorer
@@ -155,7 +204,7 @@ function MarketContent() {
       </div>
 
       {/* Filters */}
-      <div className="flex items-center gap-4">
+      <div className="flex items-center justify-between">
         <div className="flex gap-1 p-1 bg-sand-100 rounded-lg">
           {PROPERTY_TYPES.map((t) => (
             <button
@@ -171,15 +220,23 @@ function MarketContent() {
             </button>
           ))}
         </div>
-        <select
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value)}
-          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-sand-200 bg-white text-sand-700 focus:outline-none focus:border-teal-400"
-        >
-          {SORT_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value}>{o.label}</option>
-          ))}
-        </select>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-sand-400 uppercase tracking-wider font-medium">Sort</span>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            className="appearance-none px-3 py-1.5 pr-8 text-xs font-medium rounded-lg border border-sand-200 bg-white text-sand-700 focus:outline-none focus:ring-2 focus:ring-teal-400/30 focus:border-teal-400 cursor-pointer"
+            style={{
+              backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%239a9080' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`,
+              backgroundRepeat: "no-repeat",
+              backgroundPosition: "right 8px center",
+            }}
+          >
+            {SORT_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
       {loading ? (
@@ -191,49 +248,70 @@ function MarketContent() {
         </div>
       ) : (
         <>
-          {/* Chart */}
+          {/* 2025 vs 2026 Comparison Chart */}
           <div className="card-hairline p-6">
-            <h3 className="text-sm font-semibold text-sand-800 mb-4">
-              Median Values by Neighbourhood
-            </h3>
-            <div className="h-[340px]">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-sm font-semibold text-sand-800">
+                  2025 vs 2026 Assessment Values
+                </h3>
+                <p className="text-xs text-sand-400 mt-0.5">
+                  Click any bar to view that neighbourhood&apos;s full trend history
+                </p>
+              </div>
+            </div>
+            <div className="h-[380px]">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartData} margin={{ top: 0, right: 0, left: 0, bottom: 40 }}>
+                <BarChart
+                  data={barChartData}
+                  margin={{ top: 10, right: 10, left: 10, bottom: 50 }}
+                >
                   <CartesianGrid strokeDasharray="3 3" stroke="#e8e4dd" vertical={false} />
                   <XAxis
                     dataKey="name"
-                    tick={{ fontSize: 10, fill: "#7d7365" }}
+                    tick={{ fontSize: 9, fill: "#7d7365" }}
                     angle={-45}
                     textAnchor="end"
                     height={60}
                   />
                   <YAxis
                     tick={{ fontSize: 10, fill: "#9a9080" }}
-                    tickFormatter={(v) => formatCurrency(v)}
+                    tickFormatter={(v) => `$${(v / 1000000).toFixed(1)}M`}
                   />
                   <Tooltip
                     contentStyle={{
                       background: "white",
                       border: "1px solid #e8e4dd",
-                      borderRadius: 8,
+                      borderRadius: 10,
                       fontSize: 12,
+                      padding: "10px 14px",
                     }}
-                    formatter={(value) => [formatCurrency(value as number), "Median"]}
+                    formatter={(value) => [formatCurrency(value as number), ""]}
+                    labelFormatter={(label, payload) => {
+                      const fullName = (payload as Array<{ payload?: { fullName?: string } }>)?.[0]?.payload?.fullName;
+                      return fullName || String(label);
+                    }}
                   />
+                  <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
+                  <Bar dataKey="2025" fill="#d5cfc5" radius={[3, 3, 0, 0]} barSize={12} name="2025 Assessment" />
                   <Bar
-                    dataKey="median"
-                    radius={[4, 4, 0, 0]}
+                    dataKey="2026"
+                    radius={[3, 3, 0, 0]}
+                    barSize={12}
+                    name="2026 Assessment"
                     cursor="pointer"
-                    onClick={(_data, index) => {
-                      if (index != null && chartData[index]) setSelected(chartData[index].code);
+                    onClick={(_data: unknown, index: number) => {
+                      if (index != null && barChartData[index]) {
+                        handleSelect(barChartData[index].code);
+                      }
                     }}
                   >
-                    {chartData.map((entry) => (
+                    {barChartData.map((d) => (
                       <Cell
-                        key={entry.code}
-                        fill={selected === entry.code ? "#06c2ae" : "#c7fef4"}
-                        stroke={selected === entry.code ? "#077d73" : "none"}
-                        strokeWidth={selected === entry.code ? 1 : 0}
+                        key={d.code}
+                        fill={selected === d.code ? "#059e92" : "#06c2ae"}
+                        stroke={selected === d.code ? "#047d73" : "none"}
+                        strokeWidth={selected === d.code ? 2 : 0}
                       />
                     ))}
                   </Bar>
@@ -242,133 +320,273 @@ function MarketContent() {
             </div>
           </div>
 
-          {/* Detail + Table */}
-          <div className="grid lg:grid-cols-[1fr,380px] gap-6">
-            {/* Table */}
-            <div className="card-hairline overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-sand-200 bg-sand-50/50">
-                    {["Neighbourhood", "Median Value", "YoY", "Properties"].map((h) => (
-                      <th
-                        key={h}
-                        className="text-left py-3 px-4 text-[11px] font-medium text-sand-400 uppercase tracking-wider"
-                      >
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {sorted.map((s) => {
-                    const isActive = selected === s.neighbourhood_code;
-                    const yoy = getYoy(s);
-                    return (
-                      <tr
-                        key={s.neighbourhood_code}
-                        onClick={() => setSelected(isActive ? null : s.neighbourhood_code)}
-                        className={`border-b border-sand-100 cursor-pointer transition ${
-                          isActive
-                            ? "bg-teal-50/50 border-l-2 border-l-teal-500"
-                            : "hover:bg-sand-50"
-                        }`}
-                      >
-                        <td className="py-3 px-4 text-sand-800 font-medium">
-                          {s.neighbourhood_name}
-                        </td>
-                        <td className="py-3 px-4 text-sand-700" style={{ fontFamily: "var(--font-display)" }}>
-                          {formatCurrency(getMedian(s))}
-                        </td>
-                        <td className="py-3 px-4">
-                          <span
-                            className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                              yoy != null && yoy >= 0
-                                ? "bg-emerald-50 text-emerald-600"
-                                : yoy != null
-                                ? "bg-rose-50 text-rose-500"
-                                : "text-sand-400"
-                            }`}
-                          >
-                            {formatPercent(yoy)}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 text-sand-500">
-                          {formatNumber(getCount(s))}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Selected detail panel */}
-            <div className="card-hairline p-6">
-              {selectedSummary ? (
-                <div className="space-y-5">
-                  <div>
+          {/* Selected Neighbourhood Trend — appears when a neighbourhood is clicked */}
+          {selected && selectedTrend && selectedTrend.trends.length >= 2 && (
+            <div ref={trendRef} className="card-hairline p-6 border-l-4 border-l-teal-500 animate-fade-in-up">
+              <div className="flex items-start justify-between mb-1">
+                <div>
+                  <div className="flex items-center gap-3">
                     <h3
-                      className="text-xl text-sand-900"
+                      className="text-xl text-sand-900 font-medium"
                       style={{ fontFamily: "var(--font-display)" }}
                     >
-                      {selectedSummary.neighbourhood_name}
+                      {selectedTrend.neighbourhood_name}
                     </h3>
-                    <p className="text-xs text-sand-400 mt-0.5">
-                      {selectedSummary.neighbourhood_code}
-                    </p>
+                    {selectedSummary && (() => {
+                      const yoy = getYoy(selectedSummary);
+                      return yoy != null ? (
+                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                          yoy >= 0 ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-500"
+                        }`}>
+                          {formatPercent(yoy)} YoY
+                        </span>
+                      ) : null;
+                    })()}
                   </div>
+                  <p className="text-xs text-sand-400 mt-0.5">
+                    Median assessed value trend &mdash; {selectedTrend.trends.length} years of data
+                  </p>
+                </div>
+                <button
+                  onClick={() => setSelected(null)}
+                  className="text-sand-400 hover:text-sand-600 transition p-1"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                    <path d="M4 4l8 8M12 4l-8 8" />
+                  </svg>
+                </button>
+              </div>
 
-                  <div className="space-y-4">
-                    <h4 className="text-xs font-medium text-sand-400 uppercase tracking-wider">
-                      By Property Type
-                    </h4>
-                    {Object.entries(selectedSummary.median_values).map(([type, val]) => (
-                      <div key={type} className="flex items-center justify-between py-2 border-b border-sand-100">
-                        <div>
-                          <span className="text-sm text-sand-700 capitalize">{type}</span>
-                          <span className="text-xs text-sand-400 ml-2">
-                            ({formatNumber(selectedSummary.property_counts[type] || 0)})
-                          </span>
+              {/* Property type breakdown inline */}
+              {selectedSummary && (
+                <div className="flex gap-4 mb-4 mt-3">
+                  {Object.entries(selectedSummary.median_values).map(([type, val]) => (
+                    <div key={type} className="flex items-center gap-2 text-xs">
+                      <span className="text-sand-400 capitalize">{type}:</span>
+                      <span className="font-medium text-sand-700">{formatCurrency(val)}</span>
+                      <span className={`${
+                        (selectedSummary.yoy_changes[type] ?? 0) >= 0 ? "text-emerald-600" : "text-rose-500"
+                      }`}>
+                        {formatPercent(selectedSummary.yoy_changes[type])}
+                      </span>
+                      <span className="text-sand-300">|</span>
+                      <span className="text-sand-400">{formatNumber(selectedSummary.property_counts[type] || 0)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="h-[280px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={selectedTrend.trends} margin={{ top: 10, right: 20, left: 10, bottom: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e8e4dd" />
+                    <XAxis
+                      dataKey="year"
+                      tick={{ fontSize: 11, fill: "#7d7365", fontWeight: 500 }}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 10, fill: "#9a9080" }}
+                      tickFormatter={(v) => `$${(v / 1000000).toFixed(1)}M`}
+                      width={60}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        background: "white",
+                        border: "1px solid #e8e4dd",
+                        borderRadius: 10,
+                        fontSize: 12,
+                        padding: "10px 14px",
+                        boxShadow: "0 4px 12px rgba(0,0,0,0.08)",
+                      }}
+                      formatter={(value) => [formatCurrency(value as number), "Median Value"]}
+                      labelFormatter={(label) => `Assessment Year ${label}`}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="median_value"
+                      stroke="#059e92"
+                      strokeWidth={2.5}
+                      dot={{ r: 5, fill: "#059e92", strokeWidth: 2, stroke: "white" }}
+                      activeDot={{ r: 7, fill: "#047d73", strokeWidth: 2, stroke: "white" }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Year-by-year values row */}
+              <div className="flex justify-between mt-3 pt-3 border-t border-sand-100">
+                {selectedTrend.trends.map((pt) => (
+                  <div key={pt.year} className="text-center">
+                    <div className="text-[11px] text-sand-400">{pt.year}</div>
+                    <div className="text-sm font-medium text-sand-800" style={{ fontFamily: "var(--font-display)" }}>
+                      {formatCurrency(pt.median_value)}
+                    </div>
+                    <div className="text-[10px] text-sand-400">{formatNumber(pt.count)} props</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* YoY Change Rankings */}
+          {sortedTrends.length > 0 && (
+            <div className="grid lg:grid-cols-2 gap-6">
+              {/* Biggest Gainers */}
+              <div className="card-hairline p-6">
+                <h3 className="text-sm font-semibold text-sand-800 mb-4 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                  Top Gainers (YoY)
+                </h3>
+                <div className="space-y-1">
+                  {sortedTrends
+                    .map((t) => {
+                      const y2025 = t.trends.find((p) => p.year === 2025);
+                      const y2026 = t.trends.find((p) => p.year === 2026);
+                      const change = y2025 && y2026 && y2025.median_value > 0
+                        ? ((y2026.median_value - y2025.median_value) / y2025.median_value) * 100
+                        : null;
+                      return { ...t, change, val2026: y2026?.median_value ?? 0 };
+                    })
+                    .filter((t) => t.change != null && t.change > 0)
+                    .sort((a, b) => (b.change ?? 0) - (a.change ?? 0))
+                    .slice(0, 8)
+                    .map((t, i) => (
+                      <div
+                        key={t.neighbourhood_code}
+                        onClick={() => handleSelect(t.neighbourhood_code)}
+                        className={`flex items-center justify-between py-2.5 px-3 rounded-lg cursor-pointer transition ${
+                          selected === t.neighbourhood_code
+                            ? "bg-teal-50 border border-teal-200/60"
+                            : "hover:bg-sand-50 border border-transparent"
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs text-sand-400 w-4 tabular-nums">{i + 1}</span>
+                          <span className="text-sm text-sand-800">{t.neighbourhood_name}</span>
                         </div>
-                        <div className="text-right">
-                          <div className="text-sm font-medium text-sand-800">
-                            {formatCurrency(val)}
-                          </div>
-                          <div className={`text-[11px] ${
-                            (selectedSummary.yoy_changes[type] ?? 0) >= 0
-                              ? "text-emerald-600"
-                              : "text-rose-500"
-                          }`}>
-                            {formatPercent(selectedSummary.yoy_changes[type])}
-                          </div>
+                        <div className="text-right flex items-center gap-3">
+                          <span className="text-xs text-sand-500 tabular-nums">{formatCurrency(t.val2026)}</span>
+                          <span className="text-xs font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full tabular-nums">
+                            +{t.change?.toFixed(1)}%
+                          </span>
                         </div>
                       </div>
                     ))}
-                  </div>
-
-                  {selectedSummary.interest_rate && (
-                    <div className="pt-2">
-                      <div className="text-[11px] text-sand-400 uppercase tracking-wider">
-                        5-Year Fixed Rate
-                      </div>
-                      <div className="text-lg text-sand-800 mt-0.5" style={{ fontFamily: "var(--font-display)" }}>
-                        {selectedSummary.interest_rate}%
-                      </div>
-                    </div>
-                  )}
                 </div>
-              ) : (
-                <div className="h-full flex flex-col items-center justify-center text-center py-12">
-                  <svg className="w-10 h-10 text-sand-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z" />
-                  </svg>
-                  <p className="text-sm text-sand-400">
-                    Select a neighbourhood to view details
-                  </p>
+              </div>
+              {/* Biggest Decliners */}
+              <div className="card-hairline p-6">
+                <h3 className="text-sm font-semibold text-sand-800 mb-4 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-rose-500" />
+                  Largest Declines (YoY)
+                </h3>
+                <div className="space-y-1">
+                  {sortedTrends
+                    .map((t) => {
+                      const y2025 = t.trends.find((p) => p.year === 2025);
+                      const y2026 = t.trends.find((p) => p.year === 2026);
+                      const change = y2025 && y2026 && y2025.median_value > 0
+                        ? ((y2026.median_value - y2025.median_value) / y2025.median_value) * 100
+                        : null;
+                      return { ...t, change, val2026: y2026?.median_value ?? 0 };
+                    })
+                    .filter((t) => t.change != null && t.change <= 0)
+                    .sort((a, b) => (a.change ?? 0) - (b.change ?? 0))
+                    .slice(0, 8)
+                    .map((t, i) => (
+                      <div
+                        key={t.neighbourhood_code}
+                        onClick={() => handleSelect(t.neighbourhood_code)}
+                        className={`flex items-center justify-between py-2.5 px-3 rounded-lg cursor-pointer transition ${
+                          selected === t.neighbourhood_code
+                            ? "bg-teal-50 border border-teal-200/60"
+                            : "hover:bg-sand-50 border border-transparent"
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs text-sand-400 w-4 tabular-nums">{i + 1}</span>
+                          <span className="text-sm text-sand-800">{t.neighbourhood_name}</span>
+                        </div>
+                        <div className="text-right flex items-center gap-3">
+                          <span className="text-xs text-sand-500 tabular-nums">{formatCurrency(t.val2026)}</span>
+                          <span className="text-xs font-medium text-rose-500 bg-rose-50 px-2 py-0.5 rounded-full tabular-nums">
+                            {t.change?.toFixed(1)}%
+                          </span>
+                        </div>
+                      </div>
+                    ))}
                 </div>
-              )}
+              </div>
             </div>
+          )}
+
+          {/* Neighbourhood Table */}
+          <div className="card-hairline overflow-hidden">
+            <div className="px-4 py-3 border-b border-sand-200 bg-sand-50/30">
+              <h3 className="text-sm font-semibold text-sand-800">
+                All Neighbourhoods
+              </h3>
+              <p className="text-[11px] text-sand-400 mt-0.5">
+                Click a row to view assessed value history
+              </p>
+            </div>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-sand-200 bg-sand-50/50">
+                  {["Neighbourhood", "Median Value", "YoY Change", "Properties"].map((h) => (
+                    <th
+                      key={h}
+                      className="text-left py-3 px-4 text-[11px] font-medium text-sand-400 uppercase tracking-wider"
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((s) => {
+                  const isActive = selected === s.neighbourhood_code;
+                  const yoy = getYoy(s);
+                  return (
+                    <tr
+                      key={s.neighbourhood_code}
+                      onClick={() => handleSelect(s.neighbourhood_code)}
+                      className={`border-b border-sand-100 cursor-pointer transition ${
+                        isActive
+                          ? "bg-teal-50/60 border-l-[3px] border-l-teal-500"
+                          : "hover:bg-sand-50"
+                      }`}
+                    >
+                      <td className="py-3 px-4 text-sand-800 font-medium">
+                        {s.neighbourhood_name}
+                      </td>
+                      <td className="py-3 px-4 text-sand-700 tabular-nums" style={{ fontFamily: "var(--font-display)" }}>
+                        {formatCurrency(getMedian(s))}
+                      </td>
+                      <td className="py-3 px-4">
+                        <span
+                          className={`text-xs font-medium px-2 py-0.5 rounded-full tabular-nums ${
+                            yoy != null && yoy >= 0
+                              ? "bg-emerald-50 text-emerald-600"
+                              : yoy != null
+                              ? "bg-rose-50 text-rose-500"
+                              : "text-sand-400"
+                          }`}
+                        >
+                          {formatPercent(yoy)}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-sand-500 tabular-nums">
+                        {formatNumber(getCount(s))}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </>
       )}

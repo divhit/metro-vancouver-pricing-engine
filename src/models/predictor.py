@@ -699,19 +699,20 @@ class PropertyPredictor:
                 features_df[feat] = np.nan
         features_df = features_df[model_feature_names]
 
-        # Handle categoricals
-        pandas_cats = model.pandas_categorical
-        if pandas_cats:
-            cat_col_idx = 0
+        # Convert to numpy to avoid categorical mismatch issues with
+        # LightGBM's Booster.predict — encode strings as NaN since
+        # single-row prediction can't reliably reconstruct training categories.
+        try:
+            features_arr = features_df.to_numpy(dtype=np.float64, na_value=np.nan)
+        except (ValueError, TypeError):
+            # Some columns may be strings — convert them to NaN
             for col in features_df.columns:
-                if pd.api.types.is_string_dtype(features_df[col]) or pd.api.types.is_categorical_dtype(features_df[col]):
-                    if cat_col_idx < len(pandas_cats):
-                        cat_type = pd.CategoricalDtype(categories=pandas_cats[cat_col_idx])
-                        features_df[col] = features_df[col].astype(cat_type)
-                        cat_col_idx += 1
+                if features_df[col].dtype == object:
+                    features_df[col] = pd.to_numeric(features_df[col], errors="coerce")
+            features_arr = features_df.to_numpy(dtype=np.float64, na_value=np.nan)
 
         try:
-            log_pred = model.predict(features_df)
+            log_pred = model.predict(features_arr)
             market_estimate = float(np.expm1(log_pred[0]))
             info = f"market_{ptype} (MAPE={metadata.get('cv_mape', '?')}%, n={metadata.get('n_samples', '?')})"
             return market_estimate, info

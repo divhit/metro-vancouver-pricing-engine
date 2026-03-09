@@ -226,6 +226,14 @@ class PredictionResponse(BaseModel):
     metadata: PredictionMetadata = Field(
         description="Prediction metadata",
     )
+    market_estimate: Optional[float] = Field(
+        None,
+        description="Market price estimate from sold-price model (if available)",
+    )
+    market_model_info: Optional[str] = Field(
+        None,
+        description="Market model details (type, MAPE, sample count)",
+    )
 
 
 # ============================================================

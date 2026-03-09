@@ -143,17 +143,22 @@ class PredictionCache:
         pid: Optional[str] = None,
         lat: Optional[float] = None,
         lon: Optional[float] = None,
+        address: Optional[str] = None,
         property_type: Optional[str] = None,
         overrides: Optional[dict] = None,
     ) -> str:
         """Generate a deterministic cache key for a prediction request.
 
         The key is a SHA-256 hash of the normalized request parameters.
+        Address is included because different units at the same lat/lon
+        (e.g. #101 vs #302 in a condo building) must resolve to
+        different properties.
 
         Args:
             pid: Property PID.
             lat: Latitude.
             lon: Longitude.
+            address: Street address including unit number.
             property_type: Property type string.
             overrides: Feature overrides dict.
 
@@ -164,6 +169,7 @@ class PredictionCache:
             "pid": pid,
             "lat": round(lat, 6) if lat is not None else None,
             "lon": round(lon, 6) if lon is not None else None,
+            "address": address,
             "property_type": property_type,
             "overrides": overrides,
         }

@@ -35,7 +35,13 @@ from shapely.geometry import Point
 logger = logging.getLogger(__name__)
 
 # TransLink GTFS static feed URL
-GTFS_URL = "https://gtfs.translink.ca/static/latest"
+# NOTE: The old URL (https://gtfs.translink.ca/static/latest) was disabled circa 2025.
+# TransLink moved the static feed to a new Azure-hosted endpoint.
+GTFS_URL = "https://gtfs-static.translink.ca/gtfs/google_transit.zip"
+GTFS_URL_FALLBACK = "https://gtfs.translink.ca/static/latest"
+
+# Local fallback path (pre-downloaded GTFS ZIP in data/raw/)
+LOCAL_GTFS_PATH = Path(__file__).resolve().parents[2] / "data" / "raw" / "translink_gtfs.zip"
 
 # GTFS file names within the ZIP
 GTFS_FILES = {
@@ -90,27 +96,44 @@ class TransLinkGTFSClient:
     def download_gtfs(self, url: Optional[str] = None) -> Path:
         """Download the GTFS ZIP file.
 
+        Tries the primary URL first, then a fallback URL, and finally
+        checks for a pre-downloaded local copy in data/raw/.
+
         Args:
-            url: Custom URL. Uses TransLink default if None.
+            url: Custom URL. Tries TransLink defaults if None.
 
         Returns:
             Path to the downloaded ZIP file.
         """
         import requests
 
-        url = url or GTFS_URL
         zip_path = self.cache_dir / "translink_gtfs.zip"
 
-        logger.info(f"Downloading GTFS data from {url}")
-        try:
-            response = requests.get(url, timeout=120)
-            response.raise_for_status()
-            zip_path.write_bytes(response.content)
-            logger.info(f"Downloaded GTFS ZIP: {len(response.content) / 1e6:.1f} MB")
-            return zip_path
-        except requests.RequestException as e:
-            logger.error(f"Failed to download GTFS data: {e}")
-            raise
+        # If a specific URL is provided, only try that one
+        urls_to_try = [url] if url else [GTFS_URL, GTFS_URL_FALLBACK]
+
+        for attempt_url in urls_to_try:
+            logger.info(f"Downloading GTFS data from {attempt_url}")
+            try:
+                response = requests.get(attempt_url, timeout=120)
+                response.raise_for_status()
+                zip_path.write_bytes(response.content)
+                logger.info(f"Downloaded GTFS ZIP: {len(response.content) / 1e6:.1f} MB")
+                return zip_path
+            except requests.RequestException as e:
+                logger.warning(f"Failed to download GTFS data from {attempt_url}: {e}")
+
+        # Fall back to local pre-downloaded copy
+        if LOCAL_GTFS_PATH.exists():
+            logger.info(f"Using local GTFS file: {LOCAL_GTFS_PATH}")
+            return LOCAL_GTFS_PATH
+
+        raise RuntimeError(
+            f"Failed to download GTFS data from all URLs ({urls_to_try}) "
+            f"and no local copy found at {LOCAL_GTFS_PATH}. "
+            "Download manually from https://www.translink.ca/about-us/"
+            "doing-business-with-translink/app-developer-resources/gtfs/gtfs-data"
+        )
 
     def load_gtfs(self, zip_path: Optional[str] = None) -> None:
         """Load GTFS data from a ZIP file into memory.
@@ -191,14 +214,65 @@ class TransLinkGTFSClient:
         )
 
     def get_stops(self) -> gpd.GeoDataFrame:
-        """Return all transit stops as a GeoDataFrame.
+        """Return all transit stops as a GeoDataFrame with route info.
+
+        Joins route_type and route_id from the stop-route map onto stops
+        so that downstream consumers (e.g., SpatialFeatureComputer) can
+        filter by route_type (1 = SkyTrain) without needing to re-join
+        the GTFS relational tables.
+
+        For stops served by multiple routes, the ``route_type`` column
+        contains the *minimum* route_type value (i.e., the most
+        rail-like mode: 0=streetcar, 1=subway/SkyTrain, 2=rail, 3=bus,
+        4=ferry).  Additional columns ``route_id`` and
+        ``route_short_name`` contain one representative value per stop.
 
         Returns:
-            GeoDataFrame with stop_id, stop_name, geometry, and route info.
+            GeoDataFrame with stop_id, stop_name, geometry, route_type,
+            route_id, and route_short_name columns.
         """
         if self._stops is None:
             raise RuntimeError("GTFS data not loaded. Call load_gtfs() first.")
-        return self._stops.copy()
+
+        stops = self._stops.copy()
+
+        if self._stop_route_map is not None and not self._stop_route_map.empty:
+            # For route_type: take the minimum (most rail-like) per stop
+            stop_route_type = (
+                self._stop_route_map
+                .groupby("stop_id")["route_type"]
+                .min()
+                .rename("route_type")
+            )
+
+            # For route_id / route_short_name: take one representative per stop
+            stop_route_info = (
+                self._stop_route_map
+                .drop_duplicates(subset=["stop_id"])
+                .set_index("stop_id")[["route_id", "route_short_name"]]
+            )
+
+            # Merge onto stops
+            stops = stops.merge(
+                stop_route_type, left_on="stop_id", right_index=True, how="left"
+            )
+            stops = stops.merge(
+                stop_route_info, left_on="stop_id", right_index=True, how="left"
+            )
+
+            n_with_route = stops["route_type"].notna().sum()
+            logger.info(
+                "Joined route info onto stops: %d/%d stops have route_type",
+                n_with_route,
+                len(stops),
+            )
+        else:
+            logger.warning(
+                "No stop-route map available; stops will lack route_type. "
+                "Ensure routes.txt, trips.txt, and stop_times.txt are in the GTFS ZIP."
+            )
+
+        return stops
 
     def get_skytrain_stations(self) -> gpd.GeoDataFrame:
         """Return only SkyTrain stations.

@@ -114,6 +114,26 @@ export interface PropertyDetail {
   longitude: number;
 }
 
+export interface SearchResult {
+  pid: string;
+  address: string;
+  property_type: string;
+  neighbourhood: string;
+  assessed_value: number;
+}
+
+export interface TrendPoint {
+  year: number;
+  median_value: number;
+  count: number;
+}
+
+export interface NeighbourhoodTrend {
+  neighbourhood_code: string;
+  neighbourhood_name: string;
+  trends: TrendPoint[];
+}
+
 export interface Neighbourhood {
   code: string;
   name: string;
@@ -142,6 +162,16 @@ export const api = {
     apiFetch<MarketSummary>(`/api/market/${encodeURIComponent(code)}`),
 
   getNeighbourhoods: () => apiFetch<Neighbourhood[]>("/api/neighbourhoods"),
+
+  searchProperties: (q: string, limit = 10) =>
+    apiFetch<SearchResult[]>(
+      `/api/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+    ),
+
+  getMarketTrends: (propertyType?: string) =>
+    apiFetch<NeighbourhoodTrend[]>(
+      `/api/market/trends${propertyType ? `?property_type=${encodeURIComponent(propertyType)}` : ""}`,
+    ),
 
   getHealth: () => apiFetch<HealthResponse>("/api/health"),
 };

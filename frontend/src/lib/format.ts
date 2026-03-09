@@ -23,6 +23,7 @@ export function formatPercent(value: number | null | undefined): string {
 }
 
 export function formatDistance(meters: number): string {
+  if (meters <= 0) return "Same area";
   if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km`;
   return `${Math.round(meters)} m`;
 }

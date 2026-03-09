@@ -37,9 +37,10 @@ METRO_VAN_BBOX = {
 }
 
 # Microsoft Building Footprints GeoJSON URL for British Columbia
+# Source: https://github.com/microsoft/CanadianBuildingFootprints
 MS_FOOTPRINTS_URL = (
-    "https://usbuildingdata.blob.core.windows.net/canadian-buildings-v3/"
-    "BritishColumbia.geojson.zip"
+    "https://minedbuildings.z5.web.core.windows.net/legacy/"
+    "canadian-buildings-v2/BritishColumbia.zip"
 )
 
 # Efficiency factors: ratio of usable floor area to gross floor area
@@ -197,7 +198,7 @@ class BuildingFootprintEstimator:
             logger.info("Loading footprints from local file: %s", filepath)
             gdf = gpd.read_file(filepath)
         else:
-            cached_path = self.cache_dir / "BritishColumbia.geojson.zip"
+            cached_path = self.cache_dir / "BritishColumbia.zip"
             if cached_path.exists():
                 logger.info(
                     "Loading footprints from cached file: %s", cached_path

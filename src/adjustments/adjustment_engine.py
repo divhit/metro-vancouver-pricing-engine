@@ -164,14 +164,25 @@ class AdjustmentEngine:
         lat = property_data.get("latitude")
         lon = property_data.get("longitude")
 
-        if lat is not None and lon is not None:
+        if (
+            lat is not None
+            and lon is not None
+            and property_type not in (PropertyType.CONDO, PropertyType.TOWNHOME)
+        ):
             premium_pct, explanation = self.assembly_calculator.compute_assembly_premium(
                 lat=lat,
                 lon=lon,
-                zoning_code=property_data.get("zoning_code"),
+                zoning_code=(
+                    property_data.get("zoning_code")
+                    or property_data.get("zoning_district")
+                ),
                 neighbourhood_code=property_data.get("neighbourhood_code"),
                 lot_frontage_ft=property_data.get("lot_frontage_ft"),
                 is_corner=property_data.get("is_corner_lot", False),
+                current_improvement_value=float(
+                    property_data.get("current_improvement_value", 0) or 0
+                ),
+                year_built=property_data.get("year_built"),
             )
             if premium_pct > 0.0:
                 running_estimate *= (1.0 + premium_pct)

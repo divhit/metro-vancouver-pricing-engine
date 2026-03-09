@@ -97,11 +97,27 @@ class ComparableEngine:
             subject, candidates_df, max_distance_m, max_age_months, same_property_type
         )
 
-        # Widen search if too few candidates survive filtering
+        # Widen search progressively if too few candidates survive filtering
         if len(filtered) < k:
             logger.info(
                 "Only %d candidates after initial filters (need %d) — "
-                "widening search to 5 km and relaxing property type",
+                "widening search to 5 km, keeping property type",
+                len(filtered),
+                k,
+            )
+            filtered = self._apply_filters(
+                subject,
+                candidates_df,
+                max_distance_m=5000,
+                max_age_months=max(max_age_months, 24),
+                same_property_type=True,
+            )
+
+        # Still not enough — widen further and relax property type
+        if len(filtered) < k:
+            logger.info(
+                "Only %d candidates at 5 km same-type (need %d) — "
+                "relaxing property type",
                 len(filtered),
                 k,
             )
@@ -128,28 +144,62 @@ class ComparableEngine:
         # Sort by similarity (ascending — lower = more similar)
         filtered = filtered.sort_values("_similarity_score").head(k)
 
+        # Check whether lat/lon are available for distance computation
+        has_latlon = (
+            "latitude" in filtered.columns
+            and "longitude" in filtered.columns
+            and subject.get("latitude", 0.0) != 0.0
+            and subject.get("longitude", 0.0) != 0.0
+        )
+
         # Build ComparableProperty objects
         comparables: list[ComparableProperty] = []
         for _, row in filtered.iterrows():
             # Compute distance for the result object
-            dist = SimilarityScorer._haversine_distance(
-                subject.get("latitude", 0.0),
-                subject.get("longitude", 0.0),
-                row.get("latitude", 0.0),
-                row.get("longitude", 0.0),
-            )
+            if has_latlon:
+                row_lat = float(row.get("latitude", 0.0))
+                row_lon = float(row.get("longitude", 0.0))
+                if row_lat != 0.0 and row_lon != 0.0:
+                    dist = SimilarityScorer._haversine_distance(
+                        subject.get("latitude", 0.0),
+                        subject.get("longitude", 0.0),
+                        row_lat, row_lon,
+                    )
+                else:
+                    dist = 0.0  # Same neighbourhood, no precise coords
+            else:
+                dist = 0.0  # No lat/lon data available
 
             # Per-dimension breakdown for explainability
             _, breakdown = self.scorer.score_with_breakdown(
                 subject, row.to_dict()
             )
 
+            # Build address: prefer civic_number + street_name for a complete address
+            civic = None
+            for civic_col in ("civic_number", "from_civic_number", "to_civic_number"):
+                cv = row.get(civic_col)
+                if cv is not None and not (isinstance(cv, float) and (cv != cv or cv == 0)):
+                    try:
+                        civic = int(cv)
+                    except (ValueError, TypeError):
+                        pass
+                    if civic and civic > 0:
+                        break
+            street = str(row.get("street_name", ""))
+            if civic and civic > 0 and street:
+                comp_address = f"{civic} {street}"
+            else:
+                comp_address = str(row.get("full_address", ""))
+                if not comp_address or comp_address == "nan":
+                    comp_address = street or str(row.get("address", ""))
+
             comp = ComparableProperty(
                 pid=str(row.get("pid", "")),
-                address=str(row.get("address", "")),
-                assessed_value=float(row.get("assessed_value", 0)),
+                address=comp_address,
+                assessed_value=float(row.get("total_assessed_value", row.get("assessed_value", 0))),
                 year_built=int(row["year_built"]) if pd.notna(row.get("year_built")) else None,
-                zoning=str(row.get("zoning", "")) or None,
+                zoning=str(row.get("zoning_district", row.get("zoning", ""))) or None,
                 neighbourhood_code=str(row.get("neighbourhood_code", "")),
                 latitude=float(row.get("latitude", 0.0)),
                 longitude=float(row.get("longitude", 0.0)),
@@ -380,9 +430,12 @@ class ComparableEngine:
                 "avg_similarity": 0.0,
             }
 
-        values = [c.assessed_value for c in comparables]
+        values = [c.assessed_value for c in comparables if c.assessed_value > 0]
         distances = [c.distance_m for c in comparables]
         similarities = [c.similarity_score for c in comparables]
+
+        if not values:
+            values = [0.0]
 
         return {
             "count": len(comparables),
@@ -427,13 +480,18 @@ class ComparableEngine:
         if subject_pid is not None and "pid" in df.columns:
             mask &= df["pid"].astype(str) != str(subject_pid)
 
-        # --- Geographic filter (bounding box first, then haversine) ---
+        # --- Geographic filter ---
         s_lat = subject.get("latitude", 0.0)
         s_lon = subject.get("longitude", 0.0)
+        has_latlon = (
+            "latitude" in df.columns
+            and "longitude" in df.columns
+            and s_lat != 0.0
+            and s_lon != 0.0
+        )
 
-        if "latitude" in df.columns and "longitude" in df.columns:
-            # Approximate bounding box for fast pre-filter
-            # 1 degree latitude ~ 111 km; longitude varies with cos(lat)
+        if has_latlon:
+            # Bounding box first, then haversine
             lat_delta = max_distance_m / 111_000.0
             lon_delta = max_distance_m / (111_000.0 * max(math.cos(math.radians(s_lat)), 0.01))
 
@@ -450,6 +508,11 @@ class ComparableEngine:
                 )
                 dist_mask = distances <= max_distance_m
                 mask.loc[mask] = dist_mask
+        elif "neighbourhood_code" in df.columns:
+            # No lat/lon — fall back to same neighbourhood as geographic proxy
+            s_hood = subject.get("neighbourhood_code")
+            if s_hood is not None:
+                mask &= df["neighbourhood_code"].astype(str) == str(s_hood)
 
         # --- Temporal filter ---
         date_col = None

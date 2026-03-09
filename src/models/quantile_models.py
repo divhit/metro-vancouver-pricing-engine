@@ -174,8 +174,24 @@ class QuantileModelTrainer:
                 f"Available quantiles: {sorted(models.keys())}"
             )
 
-        lower_log = models[lower_q].predict(X)
-        upper_log = models[upper_q].predict(X)
+        try:
+            lower_log = models[lower_q].predict(X)
+            upper_log = models[upper_q].predict(X)
+        except ValueError as e:
+            if "categorical_feature" in str(e):
+                # Categorical mismatch — convert to numpy array
+                logger.warning(
+                    "Quantile prediction categorical mismatch — "
+                    "falling back to numpy array"
+                )
+                if isinstance(X, pd.DataFrame):
+                    X_arr = X.values
+                else:
+                    X_arr = X
+                lower_log = models[lower_q].predict(X_arr)
+                upper_log = models[upper_q].predict(X_arr)
+            else:
+                raise
 
         # Convert from log-space to dollar values
         lower_bounds = np.expm1(lower_log)

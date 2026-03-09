@@ -2,8 +2,19 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type MarketSummary, type HealthResponse } from "@/lib/api";
+import { api, type MarketSummary, type HealthResponse, type NeighbourhoodTrend } from "@/lib/api";
 import { formatCurrency, formatPercent, formatNumber } from "@/lib/format";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  CartesianGrid,
+  Legend,
+  Cell,
+} from "recharts";
 
 // Demo data for when API is not connected
 const DEMO_SUMMARIES: MarketSummary[] = [
@@ -75,6 +86,7 @@ const DEMO_SUMMARIES: MarketSummary[] = [
 
 export default function DashboardPage() {
   const [summaries, setSummaries] = useState<MarketSummary[]>([]);
+  const [trends, setTrends] = useState<NeighbourhoodTrend[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [usingDemo, setUsingDemo] = useState(false);
@@ -82,12 +94,14 @@ export default function DashboardPage() {
   useEffect(() => {
     async function load() {
       try {
-        const [s, h] = await Promise.all([
+        const [s, h, t] = await Promise.all([
           api.getMarketAll(),
           api.getHealth(),
+          api.getMarketTrends(),
         ]);
         setSummaries(s);
         setHealth(h);
+        setTrends(t);
       } catch {
         setSummaries(DEMO_SUMMARIES);
         setUsingDemo(true);
@@ -195,6 +209,74 @@ export default function DashboardPage() {
           </div>
         ))}
       </div>
+
+      {/* 2025 vs 2026 Trend Chart */}
+      {!loading && trends.length > 0 && (
+        <div className="card-hairline p-6 animate-fade-in-up opacity-0" style={{ animationDelay: "0.25s", animationFillMode: "forwards" }}>
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-lg font-semibold text-sand-800">
+                2025 → 2026 Assessment Trends
+              </h2>
+              <p className="text-xs text-sand-400 mt-0.5">
+                Median assessed values by neighbourhood — previous year vs current
+              </p>
+            </div>
+            <Link
+              href="/market"
+              className="text-xs font-medium text-teal-600 hover:text-teal-700 transition"
+            >
+              Full Analysis &rarr;
+            </Link>
+          </div>
+          <div className="h-[320px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={trends
+                  .filter((t) => t.trends.length >= 2)
+                  .map((t) => {
+                    const y2025 = t.trends.find((p) => p.year === 2025);
+                    const y2026 = t.trends.find((p) => p.year === 2026);
+                    return {
+                      name: t.neighbourhood_name.length > 11
+                        ? t.neighbourhood_name.slice(0, 9) + "..."
+                        : t.neighbourhood_name,
+                      "2025": y2025?.median_value ?? 0,
+                      "2026": y2026?.median_value ?? 0,
+                    };
+                  })
+                  .sort((a, b) => b["2026"] - a["2026"])}
+                margin={{ top: 5, right: 5, left: 5, bottom: 50 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#e8e4dd" vertical={false} />
+                <XAxis
+                  dataKey="name"
+                  tick={{ fontSize: 9, fill: "#7d7365" }}
+                  angle={-45}
+                  textAnchor="end"
+                  height={55}
+                />
+                <YAxis
+                  tick={{ fontSize: 10, fill: "#9a9080" }}
+                  tickFormatter={(v) => `$${(v / 1000000).toFixed(1)}M`}
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: "white",
+                    border: "1px solid #e8e4dd",
+                    borderRadius: 10,
+                    fontSize: 12,
+                  }}
+                  formatter={(value) => [formatCurrency(value as number), ""]}
+                />
+                <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
+                <Bar dataKey="2025" fill="#d5cfc5" radius={[3, 3, 0, 0]} barSize={11} name="2025" />
+                <Bar dataKey="2026" fill="#06c2ae" radius={[3, 3, 0, 0]} barSize={11} name="2026" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
 
       {/* Neighbourhood Grid */}
       <div>

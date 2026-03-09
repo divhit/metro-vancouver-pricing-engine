@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { api, type PredictionRequest, type PredictionResponse } from "@/lib/api";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { api, type PredictionRequest, type PredictionResponse, type SearchResult } from "@/lib/api";
 import {
   formatCurrencyFull,
   formatCurrency,
@@ -22,8 +22,43 @@ import {
   ReferenceLine,
 } from "recharts";
 
+const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY;
+
+function useDebounce<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+  return debounced;
+}
+
+// Load Google Maps script once
+let googleMapsLoaded = false;
+function loadGoogleMaps(): Promise<void> {
+  if (googleMapsLoaded || typeof window === "undefined") return Promise.resolve();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if ((window as any).google?.maps?.places) {
+    googleMapsLoaded = true;
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[src*="maps.googleapis.com"]');
+    if (existing) {
+      existing.addEventListener("load", () => { googleMapsLoaded = true; resolve(); });
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_KEY}&libraries=places`;
+    script.async = true;
+    script.onload = () => { googleMapsLoaded = true; resolve(); };
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+}
+
 export default function ValuationPage() {
-  const [mode, setMode] = useState<"pid" | "address" | "coordinates">("pid");
+  const [mode, setMode] = useState<"pid" | "address" | "coordinates">("address");
   const [pid, setPid] = useState("");
   const [address, setAddress] = useState("");
   const [lat, setLat] = useState("");
@@ -33,16 +68,42 @@ export default function ValuationPage() {
   const [result, setResult] = useState<PredictionResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  // PID autocomplete state (internal DB search)
+  const [pidQuery, setPidQuery] = useState("");
+  const [pidSuggestions, setPidSuggestions] = useState<SearchResult[]>([]);
+  const [showPidDropdown, setShowPidDropdown] = useState(false);
+  const [pidHighlight, setPidHighlight] = useState(-1);
+  const pidDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Google Places autocomplete state
+  const addressInputRef = useRef<HTMLInputElement>(null);
+  const autocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
+  const [selectedCoords, setSelectedCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [selectedAddress, setSelectedAddress] = useState("");
+
+  // Track pending auto-submit
+  // pendingSubmitRef removed — no auto-submit on address selection
+
+  const debouncedPidQuery = useDebounce(pidQuery, 250);
+
+  // Core prediction logic (separated from form handler so we can call it programmatically)
+  const runPrediction = useCallback(async (overrideReq?: Partial<PredictionRequest>) => {
     setLoading(true);
     setError(null);
     setResult(null);
 
     const req: PredictionRequest = {};
-    if (mode === "pid" && pid) req.pid = pid;
-    if (mode === "address" && address) req.address = address;
-    if (mode === "coordinates" && lat && lon) {
+    if (overrideReq) {
+      Object.assign(req, overrideReq);
+    } else if (mode === "pid" && pid) {
+      req.pid = pid;
+    } else if (mode === "address") {
+      if (selectedCoords) {
+        req.latitude = selectedCoords.lat;
+        req.longitude = selectedCoords.lng;
+      }
+      if (address) req.address = address;
+    } else if (mode === "coordinates" && lat && lon) {
       req.latitude = parseFloat(lat);
       req.longitude = parseFloat(lon);
     }
@@ -56,6 +117,124 @@ export default function ValuationPage() {
     } finally {
       setLoading(false);
     }
+  }, [mode, pid, address, selectedCoords, lat, lon, propertyType]);
+
+  // PID mode: fetch from internal DB
+  useEffect(() => {
+    if (mode !== "pid" || debouncedPidQuery.length < 2) {
+      setPidSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    api.searchProperties(debouncedPidQuery, 8).then((results) => {
+      if (!cancelled) {
+        setPidSuggestions(results);
+        setShowPidDropdown(results.length > 0);
+        setPidHighlight(-1);
+      }
+    }).catch(() => {
+      if (!cancelled) setPidSuggestions([]);
+    });
+    return () => { cancelled = true; };
+  }, [debouncedPidQuery, mode]);
+
+  // Address mode: init Google Places autocomplete
+  useEffect(() => {
+    if (mode !== "address" || !GOOGLE_MAPS_KEY) return;
+
+    let mounted = true;
+    loadGoogleMaps().then(() => {
+      if (!mounted || !addressInputRef.current) return;
+      if (autocompleteRef.current) return; // Already initialized
+
+      const ac = new google.maps.places.Autocomplete(addressInputRef.current, {
+        componentRestrictions: { country: "ca" },
+        fields: ["formatted_address", "geometry", "address_components"],
+        types: ["address"],
+      });
+
+      // Bias to Vancouver area
+      const vancouverBounds = new google.maps.LatLngBounds(
+        new google.maps.LatLng(49.19, -123.27),
+        new google.maps.LatLng(49.32, -123.02),
+      );
+      ac.setBounds(vancouverBounds);
+
+      ac.addListener("place_changed", () => {
+        const place = ac.getPlace();
+        if (!place.geometry?.location) return;
+
+        const formattedAddr = place.formatted_address || "";
+        const coords = {
+          lat: place.geometry.location.lat(),
+          lng: place.geometry.location.lng(),
+        };
+
+        setAddress(formattedAddr);
+        setSelectedAddress(formattedAddr);
+        setSelectedCoords(coords);
+        setLat(coords.lat.toString());
+        setLon(coords.lng.toString());
+
+        // Address selected — user must click "Get Valuation" to proceed
+      });
+
+      autocompleteRef.current = ac;
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [mode]);
+
+  // Address selection populates fields but does NOT auto-submit.
+  // User must click "Get Valuation" to trigger the prediction.
+
+  // Clean up autocomplete when leaving address mode
+  useEffect(() => {
+    if (mode !== "address") {
+      autocompleteRef.current = null;
+    }
+  }, [mode]);
+
+  // Close PID dropdown on outside click
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (pidDropdownRef.current && !pidDropdownRef.current.contains(e.target as Node)) {
+        setShowPidDropdown(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const selectPidSuggestion = useCallback((s: SearchResult) => {
+    setPid(s.pid);
+    setPidQuery(s.address + " (PID: " + s.pid + ")");
+    if (s.property_type) setPropertyType(s.property_type);
+    setShowPidDropdown(false);
+  }, []);
+
+  function handlePidKeyDown(e: React.KeyboardEvent) {
+    if (!showPidDropdown || pidSuggestions.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setPidHighlight((i) => Math.min(i + 1, pidSuggestions.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setPidHighlight((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter" && pidHighlight >= 0) {
+      e.preventDefault();
+      selectPidSuggestion(pidSuggestions[pidHighlight]);
+    } else if (e.key === "Escape") {
+      setShowPidDropdown(false);
+    }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setShowPidDropdown(false);
+    runPrediction();
   }
 
   return (
@@ -96,32 +275,104 @@ export default function ValuationPage() {
         <div className="flex gap-4 items-end">
           {/* Dynamic input */}
           <div className="flex-1">
+            {/* PID Mode: Internal DB search */}
             {mode === "pid" && (
-              <div>
+              <div className="relative" ref={pidDropdownRef}>
                 <label className="block text-xs font-medium text-sand-500 mb-1.5">
-                  BC Assessment PID
+                  Search by PID or Street Name
                 </label>
-                <input
-                  type="text"
-                  value={pid}
-                  onChange={(e) => setPid(e.target.value)}
-                  placeholder="e.g. 012-345-678"
-                  className="w-full px-4 py-2.5 rounded-lg border border-sand-200 bg-white text-sand-900 text-sm placeholder:text-sand-300 focus:outline-none focus:border-teal-400 focus:ring-1 focus:ring-teal-200 transition"
-                />
+                <div className="relative">
+                  <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-sand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                  <input
+                    type="text"
+                    value={pidQuery}
+                    onChange={(e) => { setPidQuery(e.target.value); setPid(e.target.value); }}
+                    onFocus={() => pidSuggestions.length > 0 && setShowPidDropdown(true)}
+                    onKeyDown={handlePidKeyDown}
+                    placeholder="e.g. 012-345-678 or Main St..."
+                    autoComplete="off"
+                    className="w-full pl-10 pr-4 py-2.5 rounded-lg border border-sand-200 bg-white text-sand-900 text-sm placeholder:text-sand-300 focus:outline-none focus:border-teal-400 focus:ring-1 focus:ring-teal-200 transition"
+                  />
+                </div>
+                {showPidDropdown && pidSuggestions.length > 0 && (
+                  <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-sand-200 rounded-xl shadow-lg overflow-hidden max-h-[400px] overflow-y-auto">
+                    {pidSuggestions.map((s, i) => (
+                      <button
+                        key={s.pid}
+                        type="button"
+                        onClick={() => selectPidSuggestion(s)}
+                        className={`w-full text-left px-4 py-3 flex items-center justify-between gap-3 transition ${
+                          i === pidHighlight
+                            ? "bg-teal-50"
+                            : "hover:bg-sand-50"
+                        } ${i > 0 ? "border-t border-sand-100" : ""}`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm text-sand-900 font-medium truncate">
+                            {s.address}
+                          </div>
+                          <div className="text-xs text-sand-400 mt-0.5 flex items-center gap-2">
+                            <span className="font-mono">{s.pid}</span>
+                            <span>&middot;</span>
+                            <span className="capitalize">{s.property_type}</span>
+                            <span>&middot;</span>
+                            <span>{s.neighbourhood}</span>
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-sm font-medium text-sand-700">
+                            {formatCurrency(s.assessed_value)}
+                          </div>
+                          <div className="text-[10px] text-sand-400">assessed</div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
+            {/* Address Mode: Google Places autocomplete */}
             {mode === "address" && (
               <div>
                 <label className="block text-xs font-medium text-sand-500 mb-1.5">
                   Street Address
+                  <span className="ml-2 text-[10px] text-teal-500 font-normal">Powered by Google</span>
                 </label>
-                <input
-                  type="text"
-                  value={address}
-                  onChange={(e) => setAddress(e.target.value)}
-                  placeholder="e.g. 1234 Main St, Vancouver, BC"
-                  className="w-full px-4 py-2.5 rounded-lg border border-sand-200 bg-white text-sand-900 text-sm placeholder:text-sand-300 focus:outline-none focus:border-teal-400 focus:ring-1 focus:ring-teal-200 transition"
-                />
+                <div className="relative">
+                  <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-sand-400 z-10 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                  <input
+                    ref={addressInputRef}
+                    type="text"
+                    placeholder="Start typing an address... e.g. 6149 Fremlin Street"
+                    autoComplete="off"
+                    className="google-pac-input w-full pl-10 pr-4 py-2.5 rounded-lg border border-sand-200 bg-white text-sand-900 text-sm placeholder:text-sand-300 focus:outline-none focus:border-teal-400 focus:ring-1 focus:ring-teal-200 transition"
+                  />
+                </div>
+                {selectedCoords && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-teal-50 border border-teal-200 text-[11px] text-teal-700">
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                      Address found
+                    </span>
+                    <span className="text-[10px] text-sand-400">
+                      {selectedCoords.lat.toFixed(5)}, {selectedCoords.lng.toFixed(5)}
+                    </span>
+                    {loading && (
+                      <span className="text-[10px] text-teal-600 flex items-center gap-1">
+                        <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Generating valuation...
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             )}
             {mode === "coordinates" && (

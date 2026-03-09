@@ -187,10 +187,23 @@ class SpatialFeatureComputer:
         # Preserve original CRS for return
         original_crs = properties_gdf.crs or WGS84
 
+        # Filter out properties without valid geometry before projecting
+        # (POINT(NaN NaN) or None geometries poison spatial joins)
+        has_geom = properties_gdf.geometry.notna() & ~properties_gdf.geometry.is_empty
+        props_valid = properties_gdf.loc[has_geom].copy()
+        props_no_geom = properties_gdf.loc[~has_geom].copy()
+        n_no_geom = len(props_no_geom)
+        if n_no_geom > 0:
+            logger.info(
+                "Excluding %d properties without valid geometry from spatial computation",
+                n_no_geom,
+            )
+
         # Project to UTM10N
-        props = self._ensure_utm(properties_gdf.copy(), "properties")
+        props = self._ensure_utm(props_valid, "properties")
 
         # Store original index for safe column assignment
+        original_idx = props.index.copy()
         props = props.reset_index(drop=True)
 
         computed = []
@@ -198,54 +211,101 @@ class SpatialFeatureComputer:
 
         # --- Transit features ---
         if self._transit_stops is not None:
-            props = self._compute_transit_features(props, self._transit_stops)
-            computed.append("transit")
+            try:
+                props = self._compute_transit_features(props, self._transit_stops)
+                computed.append("transit")
+            except Exception as exc:
+                logger.warning("Transit feature computation failed: %s", exc)
+                skipped.append("transit")
         else:
             skipped.append("transit")
 
         # --- School features ---
         if self._schools is not None:
-            props = self._compute_school_features(props, self._schools)
-            computed.append("schools")
+            try:
+                props = self._compute_school_features(props, self._schools)
+                computed.append("schools")
+            except Exception as exc:
+                logger.warning("School feature computation failed: %s", exc)
+                skipped.append("schools")
         else:
             skipped.append("schools")
 
         # --- Park features ---
         if self._parks is not None:
-            props = self._compute_park_features(props, self._parks)
-            computed.append("parks")
+            try:
+                props = self._compute_park_features(props, self._parks)
+                computed.append("parks")
+            except Exception as exc:
+                logger.warning("Park feature computation failed: %s", exc)
+                skipped.append("parks")
         else:
             skipped.append("parks")
 
         # --- Environmental risk features ---
         if any(layer is not None for layer in [self._alr, self._floodplain, self._contaminated]):
-            props = self._compute_environmental_features(
-                props, self._alr, self._floodplain, self._contaminated
-            )
-            computed.append("environmental")
+            try:
+                props = self._compute_environmental_features(
+                    props, self._alr, self._floodplain, self._contaminated
+                )
+                computed.append("environmental")
+            except Exception as exc:
+                logger.warning("Environmental feature computation failed: %s", exc)
+                skipped.append("environmental")
         else:
             skipped.append("environmental")
 
         # --- Census / demographic features ---
         if self._census_da is not None:
-            props = self._compute_census_features(props, self._census_da)
-            computed.append("census")
+            try:
+                props = self._compute_census_features(props, self._census_da)
+                computed.append("census")
+            except Exception as exc:
+                logger.warning("Census feature computation failed: %s", exc)
+                skipped.append("census")
         else:
             skipped.append("census")
 
         # --- Location reference features ---
-        props = self._compute_location_features(props)
-        computed.append("location")
+        try:
+            props = self._compute_location_features(props)
+            computed.append("location")
+        except Exception as exc:
+            logger.warning("Location feature computation failed: %s", exc)
+            skipped.append("location")
 
         # --- STR (short-term rental) features ---
         if self._airbnb is not None:
-            props = self._compute_str_features(props, self._airbnb)
-            computed.append("str")
+            try:
+                props = self._compute_str_features(props, self._airbnb)
+                computed.append("str")
+            except Exception as exc:
+                logger.warning("STR feature computation failed: %s", exc)
+                skipped.append("str")
         else:
             skipped.append("str")
 
         # Project back to original CRS
         props = props.to_crs(original_crs)
+
+        # Restore original index
+        props.index = original_idx
+
+        # Reassemble: add back properties without geometry
+        if n_no_geom > 0:
+            new_cols_list = [
+                c for c in props.columns
+                if c not in props_no_geom.columns and c != "geometry"
+            ]
+            for col in new_cols_list:
+                props_no_geom[col] = np.nan
+            props = pd.concat([props, props_no_geom]).sort_index()
+
+        # Ensure boolean columns are numeric (concat with NaN turns bool→object)
+        bool_cols = ["has_skytrain_800m", "in_alr", "in_floodplain", "is_tod_area"]
+        for col in bool_cols:
+            if col in props.columns:
+                props[col] = props[col].astype(float).fillna(0).astype(int)
 
         elapsed = time.perf_counter() - t0
         new_cols = [
@@ -294,20 +354,26 @@ class SpatialFeatureComputer:
             from_gdf[column_name] = np.nan
             return from_gdf
 
+        # Reset index on to_gdf to avoid duplicate-label issues in the join.
+        to_clean = to_gdf[["geometry"]].reset_index(drop=True)
+
         # sjoin_nearest returns one row per match; keep only nearest
         joined = gpd.sjoin_nearest(
             from_gdf[["geometry"]],
-            to_gdf[["geometry"]],
+            to_clean,
             how="left",
             max_distance=max_distance,
             distance_col="_dist",
         )
 
-        # Handle duplicate indices from multiple equidistant matches
-        # Keep only the row with minimum distance per original index
-        joined = joined.loc[
-            joined.groupby(joined.index)["_dist"].idxmin()
-        ]
+        # Handle duplicate rows from multiple equidistant matches.
+        # Sort by distance then drop duplicates on the left-side index
+        # to keep exactly one (nearest) row per property.
+        joined = (
+            joined
+            .sort_values("_dist")
+            .loc[~joined.index.duplicated(keep="first")]
+        )
 
         # Align back to from_gdf index
         from_gdf[column_name] = joined["_dist"].reindex(from_gdf.index).values
@@ -341,6 +407,10 @@ class SpatialFeatureComputer:
             from_gdf[column_name] = 0
             return from_gdf
 
+        # Reset index on to_gdf to avoid "cannot reindex on an axis with
+        # duplicate labels" errors from non-unique indices.
+        to_clean = to_gdf[["geometry"]].reset_index(drop=True)
+
         # Create buffered geometry
         buffers = from_gdf.copy()
         buffers["geometry"] = from_gdf.geometry.buffer(radius_m)
@@ -348,16 +418,16 @@ class SpatialFeatureComputer:
         # Spatial join: which to_gdf points fall within each buffer?
         joined = gpd.sjoin(
             buffers[["geometry"]],
-            to_gdf[["geometry"]],
+            to_clean,
             how="left",
             predicate="contains",
         )
 
         # Count matches per property (original index)
+        filtered = joined.dropna(subset=["index_right"])
         counts = (
-            joined
-            .dropna(subset=["index_right"])
-            .groupby(joined.index)
+            filtered
+            .groupby(filtered.index)
             .size()
         )
 
@@ -387,9 +457,12 @@ class SpatialFeatureComputer:
             points_gdf[column_name] = False
             return points_gdf
 
+        # Reset index on polygons to avoid duplicate-label reindex errors
+        polys_clean = polygons_gdf[["geometry"]].reset_index(drop=True)
+
         joined = gpd.sjoin(
             points_gdf[["geometry"]],
-            polygons_gdf[["geometry"]],
+            polys_clean,
             how="left",
             predicate="within",
         )
@@ -472,6 +545,9 @@ class SpatialFeatureComputer:
             from_gdf[output_column] = np.nan
             return from_gdf
 
+        # Reset index on to_gdf to avoid duplicate-label reindex errors
+        to_clean = to_gdf[["geometry", value_column]].reset_index(drop=True)
+
         # Buffer properties
         buffers = from_gdf.copy()
         buffers["geometry"] = from_gdf.geometry.buffer(radius_m)
@@ -479,16 +555,16 @@ class SpatialFeatureComputer:
         # Spatial join
         joined = gpd.sjoin(
             buffers[["geometry"]],
-            to_gdf[["geometry", value_column]],
+            to_clean,
             how="left",
             predicate="contains",
         )
 
         # Aggregate per property
+        filtered = joined.dropna(subset=[value_column])
         agg_result = (
-            joined
-            .dropna(subset=[value_column])
-            .groupby(joined.index)[value_column]
+            filtered
+            .groupby(filtered.index)[value_column]
             .agg(agg_func)
         )
 
@@ -532,12 +608,45 @@ class SpatialFeatureComputer:
         )
 
         # --- SkyTrain-specific features ---
-        # Filter to SkyTrain stations (route_type == 1 in GTFS)
+        # Filter to SkyTrain stations (route_type == 1 in GTFS = Metro/Subway)
         skytrain_mask = None
         for col in ["route_type", "ROUTE_TYPE"]:
             if col in transit_stops.columns:
                 skytrain_mask = transit_stops[col] == 1
                 break
+
+        # Fallback: detect SkyTrain stations by name pattern if route_type
+        # is unavailable or produced no matches. TransLink SkyTrain stations
+        # contain "Station" in their stop_name.
+        if skytrain_mask is None or not skytrain_mask.any():
+            name_col = None
+            for col in ["stop_name", "STOP_NAME"]:
+                if col in transit_stops.columns:
+                    name_col = col
+                    break
+
+            if name_col is not None:
+                # SkyTrain stations: name contains "Station" (excludes
+                # bus stops like "SkyTrain Stn" bus bays by also checking
+                # location_type == 1 for parent stations if available)
+                name_mask = transit_stops[name_col].str.contains(
+                    "Station", case=False, na=False
+                )
+                if "location_type" in transit_stops.columns:
+                    # GTFS location_type 1 = parent station
+                    parent_mask = transit_stops["location_type"] == 1
+                    skytrain_mask = name_mask & parent_mask
+                    if not skytrain_mask.any():
+                        # Fall back to name-only match
+                        skytrain_mask = name_mask
+                else:
+                    skytrain_mask = name_mask
+
+                if skytrain_mask is not None and skytrain_mask.any():
+                    logger.info(
+                        "Detected %d SkyTrain stations via name pattern fallback",
+                        skytrain_mask.sum(),
+                    )
 
         if skytrain_mask is not None and skytrain_mask.any():
             skytrain_stops = transit_stops[skytrain_mask].copy()
@@ -546,8 +655,8 @@ class SpatialFeatureComputer:
             )
         else:
             logger.warning(
-                "No route_type column or no SkyTrain stops found; "
-                "skipping SkyTrain-specific features"
+                "No route_type column and name-based detection found no "
+                "SkyTrain stops; skipping SkyTrain-specific features"
             )
             properties["dist_nearest_skytrain_m"] = np.nan
 
@@ -571,17 +680,20 @@ class SpatialFeatureComputer:
             buffers = properties.copy()
             buffers["geometry"] = properties.geometry.buffer(400)
 
+            # Reset index to avoid duplicate-label errors
+            transit_route_clean = transit_stops[["geometry", route_col]].reset_index(drop=True)
+
             joined = gpd.sjoin(
                 buffers[["geometry"]],
-                transit_stops[["geometry", route_col]],
+                transit_route_clean,
                 how="left",
                 predicate="contains",
             )
 
+            filtered = joined.dropna(subset=[route_col])
             unique_routes = (
-                joined
-                .dropna(subset=[route_col])
-                .groupby(joined.index)[route_col]
+                filtered
+                .groupby(filtered.index)[route_col]
                 .nunique()
             )
 
@@ -691,17 +803,22 @@ class SpatialFeatureComputer:
                 break
 
         if fsa_col is not None:
+            # Reset index on schools to prevent duplicate-label errors
+            schools_fsa = schools[["geometry", fsa_col]].reset_index(drop=True)
+
             # Join nearest school and pick up its quality score
             joined = gpd.sjoin_nearest(
                 properties[["geometry"]],
-                schools[["geometry", fsa_col]],
+                schools_fsa,
                 how="left",
                 max_distance=10_000,
                 distance_col="_dist_school",
             )
-            joined = joined.loc[
-                joined.groupby(joined.index)["_dist_school"].idxmin()
-            ]
+            joined = (
+                joined
+                .sort_values("_dist_school")
+                .loc[~joined.index.duplicated(keep="first")]
+            )
             properties["school_fsa_score_nearest"] = (
                 joined[fsa_col].reindex(properties.index).values
             )
@@ -710,16 +827,20 @@ class SpatialFeatureComputer:
             if type_col is not None and secondary_mask.any():
                 secondary_with_fsa = schools[secondary_mask & schools[fsa_col].notna()].copy()
                 if not secondary_with_fsa.empty:
+                    # Reset index to prevent duplicate-label errors
+                    sec_fsa = secondary_with_fsa[["geometry", fsa_col]].reset_index(drop=True)
                     joined_sec = gpd.sjoin_nearest(
                         properties[["geometry"]],
-                        secondary_with_fsa[["geometry", fsa_col]],
+                        sec_fsa,
                         how="left",
                         max_distance=10_000,
                         distance_col="_dist_sec",
                     )
-                    joined_sec = joined_sec.loc[
-                        joined_sec.groupby(joined_sec.index)["_dist_sec"].idxmin()
-                    ]
+                    joined_sec = (
+                        joined_sec
+                        .sort_values("_dist_sec")
+                        .loc[~joined_sec.index.duplicated(keep="first")]
+                    )
                     properties["school_fsa_score_secondary_nearest"] = (
                         joined_sec[fsa_col].reindex(properties.index).values
                     )

@@ -80,6 +80,7 @@ _DETACHED_PREFIXES = (
     "RT-",   # Two-family dwelling zones (RT-1, RT-2, etc.)
     "RA-1",  # Limited agriculture
     "FSHCA",  # First Shaughnessy
+    "R1-1",  # Residential Inclusive (2024 city-wide rezone, still detached lots)
 )
 
 # Low-density multi-family zones (row houses, duplexes) → TOWNHOME
@@ -264,8 +265,10 @@ class PropertyUniverseBuilder:
           3. Deduplicate on PID (keep latest assessment year)
           4. Classify property type from zoning codes
           5. Compute derived fields
-          6. Filter to residential properties
-          7. Validate and return
+          6. Geocode from parcel polygon centroids (adds lat/lon)
+          7. Assign correct neighbourhoods from City boundaries
+          8. Filter to residential properties
+          9. Validate and return
 
         Args:
             year: Assessment year to build for. If None, uses the
@@ -299,6 +302,12 @@ class PropertyUniverseBuilder:
 
         # 6. Compute derived fields
         df = self._compute_derived_fields(df)
+
+        # 6b. Geocode from parcel polygon centroids
+        df = self._geocode_from_parcels(df)
+
+        # 6c. Assign correct neighbourhoods from City boundaries
+        df = self._assign_neighbourhoods_spatially(df)
 
         # 7. Filter to residential properties
         df = self._filter_residential(df)
@@ -516,10 +525,19 @@ class PropertyUniverseBuilder:
         )
 
         # Full street address
-        if "from_civic_number" in df.columns and "street_name" in df.columns:
-            civic = df["from_civic_number"].fillna(0).astype(int).astype(str)
-            civic = civic.replace("0", "")
-            df["full_address"] = (civic + " " + df["street_name"].fillna("")).str.strip()
+        # Use from_civic_number when available; fall back to to_civic_number
+        # (many properties — especially non-strata — store the real civic
+        # address only in to_civic_number).
+        if "street_name" in df.columns:
+            from_civic = df.get("from_civic_number", pd.Series(dtype=float))
+            to_civic = df.get("to_civic_number", pd.Series(dtype=float))
+            # Best civic: prefer from_civic > 0, else to_civic > 0, else 0
+            best_civic = from_civic.fillna(0).astype(int)
+            use_to = (best_civic == 0) & (to_civic.fillna(0).astype(int) > 0)
+            best_civic = best_civic.where(~use_to, to_civic.fillna(0).astype(int))
+            df["civic_number"] = best_civic  # unified column for downstream use
+            civic_str = best_civic.astype(str).replace("0", "")
+            df["full_address"] = (civic_str + " " + df["street_name"].fillna("")).str.strip()
 
         # Effective age
         if "year_built" in df.columns and "tax_assessment_year" in df.columns:
@@ -529,6 +547,51 @@ class PropertyUniverseBuilder:
                 np.nan,
             )
 
+        return df
+
+    # --------------------------------------------------------
+    # GEOCODING & NEIGHBOURHOOD ASSIGNMENT
+    # --------------------------------------------------------
+
+    def _geocode_from_parcels(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add lat/lon by joining to parcel polygon centroids.
+
+        Uses ``land_coordinate`` (first 8 digits of folio) to match
+        properties to the City of Vancouver's parcel polygon dataset.
+        """
+        try:
+            from src.ingestion.parcel_geocoding import ParcelGeocoder
+
+            geocoder = ParcelGeocoder()
+            df = geocoder.geocode_properties(df)
+        except Exception as exc:
+            logger.error("Parcel geocoding failed: %s", exc, exc_info=True)
+            if "latitude" not in df.columns:
+                df["latitude"] = np.nan
+            if "longitude" not in df.columns:
+                df["longitude"] = np.nan
+        return df
+
+    def _assign_neighbourhoods_spatially(
+        self, df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """Override neighbourhood_code using City of Vancouver boundaries.
+
+        Requires ``latitude`` and ``longitude`` columns from geocoding.
+        """
+        try:
+            from src.ingestion.neighbourhood_assigner import (
+                NeighbourhoodAssigner,
+            )
+
+            assigner = NeighbourhoodAssigner()
+            df = assigner.assign_neighbourhoods(df)
+        except Exception as exc:
+            logger.error(
+                "Spatial neighbourhood assignment failed: %s",
+                exc,
+                exc_info=True,
+            )
         return df
 
     # --------------------------------------------------------

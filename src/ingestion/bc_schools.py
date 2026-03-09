@@ -4,8 +4,9 @@ BC Schools data ingestion: FSA results and school locations.
 Sources:
 - BC Ministry of Education FSA results (free CSV)
   https://catalogue.data.gov.bc.ca/dataset/bc-schools-foundation-skills-assessment-fsa-
-- BC Schools K-12 locations (DataBC)
-  https://catalogue.data.gov.bc.ca/dataset/bc-schools-school-locations
+- BC Schools K-12 with Francophone Indicators (DataBC)
+  https://catalogue.data.gov.bc.ca/dataset/bc-schools-k-12-with-francophone-indicators
+  Contains school name, district, lat/lon, facility type, and French program indicators.
 
 Foundation Skills Assessment (FSA) is administered to Grade 4 and Grade 7
 students across BC. Results include reading, writing, and numeracy scores
@@ -36,7 +37,14 @@ CATALOGUE_API = "https://catalogue.data.gov.bc.ca/api/3/action/package_show"
 
 # Dataset IDs
 FSA_DATASET_ID = "bc-schools-foundation-skills-assessment-fsa-"
-SCHOOL_LOCATIONS_DATASET_ID = "bc-schools-school-locations"
+SCHOOL_LOCATIONS_DATASET_ID = "bc-schools-k-12-with-francophone-indicators"
+
+# Direct fallback CSV URL in case the CKAN API lookup changes
+SCHOOL_LOCATIONS_DIRECT_CSV = (
+    "https://catalogue.data.gov.bc.ca/dataset/"
+    "95da1091-7e8c-4aa6-9c1b-5ab159ea7b42/resource/"
+    "5832eff2-3380-435e-911b-5ada41c1d30b/download/bc_k12_schools_2024-10.csv"
+)
 
 # School districts in Metro Vancouver
 METRO_VANCOUVER_DISTRICTS = {
@@ -149,29 +157,66 @@ class BCSchoolsClient:
     def fetch_school_locations(self) -> gpd.GeoDataFrame:
         """Download BC K-12 school locations.
 
+        Tries the CKAN catalogue API first, then falls back to a known
+        direct CSV download URL, and finally checks for a local cached file.
+
         Returns:
             GeoDataFrame with school_id, name, type, district, and geometry.
         """
         resources = self._get_csv_resources(SCHOOL_LOCATIONS_DATASET_ID)
-        if not resources:
-            logger.error("No CSV resources found for school locations")
-            return gpd.GeoDataFrame()
 
-        df = self._download_csv(resources[0]["url"], "school_locations.csv")
+        df = pd.DataFrame()
+        if resources:
+            df = self._download_csv(resources[0]["url"], "school_locations.csv")
+
+        # Fallback: direct download URL
         if df.empty:
+            logger.warning(
+                "CKAN catalogue lookup returned no CSV resources; "
+                "trying direct download URL"
+            )
+            df = self._download_csv(SCHOOL_LOCATIONS_DIRECT_CSV, "school_locations.csv")
+
+        # Fallback: local cached file
+        if df.empty:
+            local_path = self.cache_dir / "school_locations.csv"
+            if not local_path.exists():
+                # Also check the project data/raw directory
+                project_path = Path(__file__).resolve().parent.parent.parent / "data" / "raw" / "bc_k12_schools.csv"
+                if project_path.exists():
+                    local_path = project_path
+            if local_path.exists():
+                logger.info(f"Loading school locations from local cache: {local_path}")
+                df = pd.read_csv(local_path, low_memory=False, encoding="latin-1")
+
+        if df.empty:
+            logger.error("No school locations data available from any source")
             return gpd.GeoDataFrame()
 
         # Normalize column names
         df.columns = [c.upper().strip().replace(" ", "_") for c in df.columns]
 
         # Find lat/lon columns (varies by dataset version)
+        # Prefer columns named exactly LATITUDE / LONGITUDE or prefixed
+        # with SCHOOL_ (e.g. SCHOOL_LATITUDE).  The generic "LAT" / "LON"
+        # substring match is kept as a last resort but could collide with
+        # unrelated columns like HAS_LATE_FRENCH_IMMERSION.
         lat_col = None
         lon_col = None
         for c in df.columns:
-            if "LAT" in c:
+            c_up = c.upper()
+            if c_up in ("LATITUDE", "SCHOOL_LATITUDE", "LAT"):
                 lat_col = c
-            if "LON" in c or "LONG" in c:
+            if c_up in ("LONGITUDE", "SCHOOL_LONGITUDE", "LON", "LONG"):
                 lon_col = c
+
+        # Fallback: loose substring match (last match wins)
+        if lat_col is None or lon_col is None:
+            for c in df.columns:
+                if lat_col is None and "LATITUD" in c:
+                    lat_col = c
+                if lon_col is None and "LONGITUD" in c:
+                    lon_col = c
 
         if lat_col is None or lon_col is None:
             logger.error("Could not find lat/lon columns in school locations data")

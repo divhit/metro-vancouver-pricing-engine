@@ -20,10 +20,9 @@ VALET_BASE = "https://www.bankofcanada.ca/valet"
 SERIES = {
     "policy_rate": "V39079",
     "prime_rate": "V80691311",
-    "mortgage_1yr": "V80691327",
-    "mortgage_3yr": "V80691331",
-    "mortgage_5yr_fixed": "V80691335",
-    "mortgage_5yr_variable": "V80691339",  # Variable rate proxy
+    "mortgage_1yr": "V80691333",       # 1-year conventional mortgage
+    "mortgage_3yr": "V80691334",       # 3-year conventional mortgage
+    "mortgage_5yr_fixed": "V80691335", # 5-year conventional mortgage
     "cpi_all": "V41690973",
     "cpi_shelter": "V41691231",
     "bond_5yr": "V39055",

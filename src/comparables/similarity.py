@@ -149,23 +149,42 @@ class SimilarityScorer:
         # --- proximity ---
         if "proximity" in self.weights:
             w = self.weights["proximity"]
-            dist = self._haversine_distance_vec(
-                subject.get("latitude", 0.0),
-                subject.get("longitude", 0.0),
-                candidates_df.get("latitude", pd.Series(np.zeros(n))).values,
-                candidates_df.get("longitude", pd.Series(np.zeros(n))).values,
+            s_lat = subject.get("latitude", 0.0)
+            s_lon = subject.get("longitude", 0.0)
+            has_latlon = (
+                "latitude" in candidates_df.columns
+                and "longitude" in candidates_df.columns
+                and s_lat != 0.0
+                and s_lon != 0.0
             )
-            # Exponential decay with 1 km half-life
-            prox = 1.0 - np.exp(-np.log(2) * dist / 1000.0)
-            prox = np.clip(prox, 0.0, 1.0)
+            if has_latlon:
+                dist = self._haversine_distance_vec(
+                    s_lat, s_lon,
+                    candidates_df["latitude"].fillna(0).values,
+                    candidates_df["longitude"].fillna(0).values,
+                )
+                prox = 1.0 - np.exp(-np.log(2) * dist / 1000.0)
+                prox = np.clip(prox, 0.0, 1.0)
+            else:
+                # No lat/lon — use neighbourhood match as proxy
+                s_hood = subject.get("neighbourhood_code")
+                if s_hood is not None and "neighbourhood_code" in candidates_df.columns:
+                    prox = np.where(
+                        candidates_df["neighbourhood_code"].astype(str).values == str(s_hood),
+                        0.0,  # Same neighbourhood = close
+                        0.5,  # Different neighbourhood = mid-range
+                    )
+                else:
+                    prox = np.full(n, 0.3)  # Unknown = mild penalty
             scores += w * prox
 
         # --- value_similarity ---
         if "value_similarity" in self.weights:
             w = self.weights["value_similarity"]
-            sv = subject.get("assessed_value", 0)
+            sv = subject.get("total_assessed_value", subject.get("assessed_value", 0))
             cv = candidates_df.get(
-                "assessed_value", pd.Series(np.ones(n))
+                "total_assessed_value",
+                candidates_df.get("assessed_value", pd.Series(np.ones(n))),
             ).values.astype(float)
             # Avoid log(0)
             sv_safe = max(sv, 1.0)
@@ -193,9 +212,10 @@ class SimilarityScorer:
         # --- zoning_match ---
         if "zoning_match" in self.weights:
             w = self.weights["zoning_match"]
-            sz = subject.get("zoning", "")
+            sz = subject.get("zoning_district", subject.get("zoning", ""))
             cz = candidates_df.get(
-                "zoning", pd.Series([""] * n)
+                "zoning_district",
+                candidates_df.get("zoning", pd.Series([""] * n)),
             ).values
             zoning_scores = np.array(
                 [self._zoning_similarity(sz, str(z)) for z in cz],
@@ -259,20 +279,24 @@ class SimilarityScorer:
         dims: dict[str, float] = {}
 
         if "proximity" in self.weights:
-            dist = self._haversine_distance(
-                subject.get("latitude", 0.0),
-                subject.get("longitude", 0.0),
-                candidate.get("latitude", 0.0),
-                candidate.get("longitude", 0.0),
-            )
-            # Exponential decay: 1 km half-life
-            dims["proximity"] = min(
-                1.0, 1.0 - math.exp(-math.log(2) * dist / 1000.0)
-            )
+            s_lat = subject.get("latitude", 0.0)
+            s_lon = subject.get("longitude", 0.0)
+            c_lat = candidate.get("latitude", 0.0)
+            c_lon = candidate.get("longitude", 0.0)
+            if s_lat != 0 and s_lon != 0 and c_lat != 0 and c_lon != 0:
+                dist = self._haversine_distance(s_lat, s_lon, c_lat, c_lon)
+                dims["proximity"] = min(
+                    1.0, 1.0 - math.exp(-math.log(2) * dist / 1000.0)
+                )
+            else:
+                # No coords — use neighbourhood match
+                s_hood = subject.get("neighbourhood_code")
+                c_hood = candidate.get("neighbourhood_code")
+                dims["proximity"] = 0.0 if (s_hood is not None and str(s_hood) == str(c_hood)) else 0.5
 
         if "value_similarity" in self.weights:
-            v1 = max(subject.get("assessed_value", 0), 1.0)
-            v2 = max(candidate.get("assessed_value", 0), 1.0)
+            v1 = max(subject.get("total_assessed_value", subject.get("assessed_value", 0)), 1.0)
+            v2 = max(candidate.get("total_assessed_value", candidate.get("assessed_value", 0)), 1.0)
             dims["value_similarity"] = min(
                 1.0, abs(math.log(v1 / v2)) / math.log(2)
             )
@@ -287,8 +311,8 @@ class SimilarityScorer:
 
         if "zoning_match" in self.weights:
             dims["zoning_match"] = self._zoning_similarity(
-                subject.get("zoning", ""),
-                candidate.get("zoning", ""),
+                subject.get("zoning_district", subject.get("zoning", "")),
+                candidate.get("zoning_district", candidate.get("zoning", "")),
             )
 
         if "recency" in self.weights:

@@ -51,7 +51,7 @@ WFS_LAYERS = {
         "description": "ALR boundary lines",
     },
     "floodplain": {
-        "layer": "WHSE_WATER_MANAGEMENT.WLS_BC_FLOODPLAIN_AREA_SP",
+        "layer": "WHSE_BASEMAPPING.CWB_FLOODPLAINS_BC_AREA_SVW",
         "description": "BC designated floodplain areas",
     },
     "contaminated_sites": {
@@ -116,18 +116,38 @@ class EnvironmentalDataClient:
     ) -> gpd.GeoDataFrame:
         """Fetch a layer from the DataBC WFS service.
 
+        Uses a CQL_FILTER with INTERSECTS and ENVELOPE for spatial
+        filtering, which is more reliable than the BBOX parameter
+        with DataBC's GeoServer (avoids coordinate-order issues).
+
         Args:
             layer_name: Full WFS layer name.
             bbox: Bounding box dict with west, south, east, north keys.
                   Uses Metro Vancouver bbox if None.
             max_features: Maximum number of features to return.
-            cql_filter: Optional CQL filter expression.
+            cql_filter: Optional CQL filter expression. If provided,
+                        it is combined with the spatial bbox filter
+                        using AND.
 
         Returns:
             GeoDataFrame of the requested layer.
         """
         if bbox is None:
             bbox = METRO_VANCOUVER_BBOX
+
+        # Build spatial filter using CQL INTERSECTS + ENVELOPE
+        # ENVELOPE format: ENVELOPE(minX, maxX, minY, maxY)
+        # where X=longitude, Y=latitude
+        bbox_cql = (
+            f"INTERSECTS(GEOMETRY, ENVELOPE("
+            f"{bbox['west']}, {bbox['east']}, "
+            f"{bbox['south']}, {bbox['north']}))"
+        )
+
+        if cql_filter:
+            combined_cql = f"({bbox_cql}) AND ({cql_filter})"
+        else:
+            combined_cql = bbox_cql
 
         params = {
             "service": "WFS",
@@ -137,20 +157,34 @@ class EnvironmentalDataClient:
             "outputFormat": "json",
             "count": max_features,
             "srsName": "EPSG:4326",
-            "BBOX": f"{bbox['south']},{bbox['west']},{bbox['north']},{bbox['east']},EPSG:4326",
+            "CQL_FILTER": combined_cql,
         }
 
-        if cql_filter:
-            params["CQL_FILTER"] = cql_filter
-
-        url = f"{DATABC_WFS}?{urlencode(params)}"
         logger.info(f"Fetching WFS layer: {layer_name}")
 
         try:
-            response = self.session.get(url, timeout=120)
+            response = self.session.get(
+                DATABC_WFS, params=params, timeout=120
+            )
             response.raise_for_status()
 
-            gdf = gpd.read_file(response.text, driver="GeoJSON")
+            # Write response to a temp file for reliable GeoJSON parsing.
+            # Large WFS responses with special characters (e.g., DMS
+            # coordinate strings with quotes) can cause issues when
+            # parsed directly from response.text.
+            import tempfile as _tmpfile
+
+            with _tmpfile.NamedTemporaryFile(
+                suffix=".geojson", mode="wb", delete=False
+            ) as tmp:
+                tmp.write(response.content)
+                tmp_path = tmp.name
+
+            try:
+                gdf = gpd.read_file(tmp_path)
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
+
             logger.info(f"Fetched {len(gdf):,} features from {layer_name}")
 
             # Ensure CRS is WGS84

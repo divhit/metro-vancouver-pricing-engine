@@ -169,8 +169,34 @@ class StatCanCensusClient:
             response = self.session.get(url, params=params, timeout=60)
             response.raise_for_status()
 
-            # Parse the CSV response
-            df = pd.read_csv(BytesIO(response.content), encoding="latin-1", low_memory=False)
+            # The StatCan endpoint returns a ZIP file containing the CSV.
+            # Detect ZIP by checking the magic bytes (PK header).
+            content = response.content
+            if content[:2] == b"PK":
+                import io
+
+                with zipfile.ZipFile(BytesIO(content)) as zf:
+                    csv_names = [
+                        n for n in zf.namelist()
+                        if n.lower().endswith(".csv")
+                    ]
+                    if not csv_names:
+                        logger.error("No CSV found inside StatCan ZIP")
+                        return pd.DataFrame()
+                    # Use the first (usually only) CSV
+                    with zf.open(csv_names[0]) as csv_file:
+                        df = pd.read_csv(
+                            csv_file,
+                            encoding="latin-1",
+                            low_memory=False,
+                        )
+            else:
+                # Plain CSV response
+                df = pd.read_csv(
+                    BytesIO(content),
+                    encoding="latin-1",
+                    low_memory=False,
+                )
 
             if characteristics:
                 id_col = [c for c in df.columns if "CHARACTERISTIC_ID" in c.upper()]
