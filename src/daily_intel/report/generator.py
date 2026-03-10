@@ -125,7 +125,7 @@ def generate_report(
 </div>
 
 <div class="section">
-  <h2>Market Snapshot (Jan 1 – Today)</h2>
+  <h2>Daily Market Update</h2>
   <div class="stats">
     <div class="stat"><div class="n">{total}</div><div class="l">Total Sold</div></div>
     <div class="stat"><div class="n">{len(van_east)}</div><div class="l">Van East</div></div>

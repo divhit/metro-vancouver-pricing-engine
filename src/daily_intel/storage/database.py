@@ -134,14 +134,55 @@ def store_news_articles(articles: list[dict]) -> int:
 
 
 def get_sold_listings_for_date(target_date: str) -> list[dict]:
-    """Get all sold listings first seen on a specific date."""
+    """Get only NEW sold listings for the daily email.
+
+    Logic:
+    - Find listings ingested today (first_seen_date = target_date)
+    - Only include listings whose sold_date falls within the last 7 days
+      of the target_date.  This prevents a bulk CSV backfill (3 months)
+      from flooding every email — only genuinely recent sales appear.
+    - If zero listings pass that filter (e.g. initial backfill day),
+      return nothing — the email should be empty rather than repeat
+      the entire history.
+
+    Going forward, as the user provides daily CSV updates, each day's
+    CSV will naturally contain only the latest sales and they'll all
+    pass the recency filter.
+    """
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM sold_listings WHERE first_seen_date = ? ORDER BY sold_price DESC",
-        (target_date,)
+        """SELECT * FROM sold_listings
+           WHERE first_seen_date = ?
+           ORDER BY sold_price DESC""",
+        (target_date,),
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+
+    from datetime import datetime, timedelta
+
+    try:
+        target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+    except ValueError:
+        return [dict(r) for r in rows]
+
+    cutoff = target_dt - timedelta(days=7)
+    recent = []
+    for r in rows:
+        rd = dict(r)
+        sold_str = rd.get("sold_date", "")
+        if not sold_str:
+            continue  # skip listings with no sold date
+        # Parse various date formats from MLS CSVs
+        for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y", "%B %d, %Y"):
+            try:
+                sold_dt = datetime.strptime(sold_str, fmt)
+                if sold_dt >= cutoff:
+                    recent.append(rd)
+                break
+            except ValueError:
+                continue
+
+    return recent
 
 
 def get_all_sold_listings() -> list[dict]:
