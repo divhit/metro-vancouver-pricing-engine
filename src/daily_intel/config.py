@@ -47,24 +47,24 @@ PROPERTY_TYPES = ["HSE", "APT", "TWN", "PAD", "MUF"]
 
 # RSS feeds for Vancouver real estate news — curated for RE relevance
 NEWS_FEEDS = [
+    # Tier 1: RE-dedicated sources (always relevant)
     {
         "name": "STOREYS",
         "url": "https://storeys.com/feeds/cities/vancouver.rss",
         "category": "news",
-        "min_relevance": 0.0,  # STOREYS is RE-only, always relevant
+        "min_relevance": 0.0,
     },
     {
-        "name": "Rennie",
-        "url": "https://renfrewrealty.ca/feed/",
+        "name": "Steve Saretsky",
+        "url": "https://www.saretskygroup.com/blog/feed/",
         "category": "market_analysis",
         "min_relevance": 0.0,
-        "optional": True,  # May not have RSS feed
     },
     {
         "name": "UrbanYVR",
         "url": "https://urbanyvr.com/feed",
         "category": "development",
-        "min_relevance": 0.0,  # UrbanYVR is development-focused
+        "min_relevance": 0.0,
     },
     {
         "name": "Vancouver Sun Real Estate",
@@ -73,23 +73,17 @@ NEWS_FEEDS = [
         "min_relevance": 0.0,
     },
     {
-        "name": "Daily Hive Urbanized",
-        "url": "https://dailyhive.com/feed/vancouver",
-        "category": "news",
-        "min_relevance": 0.33,  # General feed — only include RE-relevant articles
-    },
-    {
-        "name": "REBGV",
-        "url": "https://www.gvrealtors.ca/news.html",
-        "category": "market_data",
-        "min_relevance": 0.0,
-        "optional": True,  # RSS may not be available
-    },
-    {
         "name": "BCREA",
         "url": "https://www.bcrea.bc.ca/feed/",
         "category": "market_data",
         "min_relevance": 0.0,
+    },
+    # Tier 2: General feeds — filter to RE-only
+    {
+        "name": "Daily Hive Urbanized",
+        "url": "https://dailyhive.com/feed/vancouver",
+        "category": "news",
+        "min_relevance": 0.33,
     },
 ]
 
