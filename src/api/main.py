@@ -1324,6 +1324,7 @@ def _convert_prediction_result(result) -> PredictionResponse:
         market_context=market_context,
         risk_flags=risk_flags,
         metadata=metadata,
+        assessed_value=round(result.assessed_value, 2) if result.assessed_value else None,
         market_estimate=round(result.market_estimate, 2) if result.market_estimate else None,
         market_model_info=result.market_model_info,
     )

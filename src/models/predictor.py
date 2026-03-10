@@ -503,6 +503,9 @@ class PropertyPredictor:
         # ------------------------------------------------------------------
         elapsed = time.perf_counter() - t0
 
+        # Get the actual BC Assessment value for the property
+        actual_assessed = float(property_data.get("total_assessed_value", 0)) or None
+
         result = PredictionResult(
             pid=str(resolved_pid),
             point_estimate=round(final_estimate, 2),
@@ -515,6 +518,7 @@ class PropertyPredictor:
             risk_flags=risk_flags,
             model_segment=actual_segment,
             model_version=_MODEL_VERSION,
+            assessed_value=round(actual_assessed, 2) if actual_assessed else None,
             market_estimate=round(market_estimate, 2) if market_estimate else None,
             market_model_info=market_model_info,
         )

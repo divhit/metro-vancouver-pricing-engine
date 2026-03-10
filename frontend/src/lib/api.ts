@@ -87,6 +87,9 @@ export interface PredictionResponse {
   market_context: MarketContext;
   risk_flags: RiskFlag[];
   metadata: PredictionMetadata;
+  assessed_value?: number;
+  market_estimate?: number;
+  market_model_info?: string;
 }
 
 export interface MarketSummary {
@@ -146,6 +149,85 @@ export interface HealthResponse {
   version: string;
 }
 
+// CMA Types
+export interface CMARequest {
+  pid?: string;
+  address?: string;
+  latitude?: number;
+  longitude?: number;
+  property_type?: string;
+  bedrooms?: number;
+  bathrooms?: number;
+  floor_area?: number;
+  year_built?: number;
+  max_comps?: number;
+  max_radius_m?: number;
+  max_age_days?: number;
+}
+
+export interface CMAComparable {
+  mls_number: string;
+  address: string;
+  sold_price: number;
+  list_price: number | null;
+  sold_date: string;
+  dom: number | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  floor_area: number | null;
+  year_built: number | null;
+  property_type: string;
+  distance_m: number;
+  similarity_score: number;
+  assessed_value: number | null;
+  sar: number | null;
+  list_to_sold: number | null;
+  adjusted_price: number;
+  adjustments: Array<{
+    name: string;
+    detail: string;
+    percentage: number;
+    dollar: number;
+  }>;
+}
+
+export interface CMAResponse {
+  subject: {
+    address: string;
+    property_type: string;
+    bedrooms: number | null;
+    bathrooms: number | null;
+    floor_area: number | null;
+    year_built: number | null;
+    assessed_value: number | null;
+  };
+  comparables: CMAComparable[];
+  comparable_count: number;
+  cma_estimate: number | null;
+  cma_range: {
+    low: number;
+    median: number;
+    high: number;
+    mean: number;
+  } | null;
+  sar_estimate: number | null;
+  assessed_value: number | null;
+  market_stats: {
+    median_sold_price: number;
+    avg_sar: number | null;
+    avg_list_to_sold: number | null;
+    avg_dom: number | null;
+    avg_distance_m: number;
+  } | null;
+  recommendation: {
+    estimated_value: number | null;
+    estimated_range: { low: number; high: number } | null;
+    confidence: string;
+    method: string | null;
+    note: string | null;
+  };
+}
+
 export const api = {
   predict: (req: PredictionRequest) =>
     apiFetch<PredictionResponse>("/api/predict", {
@@ -174,4 +256,10 @@ export const api = {
     ),
 
   getHealth: () => apiFetch<HealthResponse>("/api/health"),
+
+  getCMA: (req: CMARequest) =>
+    apiFetch<CMAResponse>("/api/cma", {
+      method: "POST",
+      body: JSON.stringify(req),
+    }),
 };

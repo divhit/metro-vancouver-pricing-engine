@@ -219,7 +219,18 @@ class CMAEngine:
         s_lon = subject.get("longitude", 0.0)
         s_type = subject.get("property_type", "")
         s_year = subject.get("year_built")
-        s_sqft = subject.get("floor_area") or subject.get("living_area_sqft") or subject.get("estimated_living_area_sqft")
+        # For floor area: prefer explicit floor_area override, then living_area_sqft.
+        # estimated_living_area_sqft from BC Assessment is often lot size for detached homes,
+        # so only use it if it's reasonable (< 5000 sqft for detached, < 3000 for others).
+        s_sqft = subject.get("floor_area") or subject.get("living_area_sqft")
+        if not s_sqft:
+            est = subject.get("estimated_living_area_sqft")
+            if est:
+                max_reasonable = 5000 if s_type == "detached" else 3000
+                if est <= max_reasonable:
+                    s_sqft = est
+                else:
+                    logger.info("Ignoring estimated_living_area_sqft=%s (likely lot size)", est)
         s_beds = subject.get("bedrooms")
         s_baths = subject.get("bathrooms")
         s_assessed = subject.get("total_assessed_value", 0)
@@ -342,13 +353,22 @@ class CMAEngine:
         Returns:
             CMA report dict with price ranges and recommendation.
         """
+        # Use same floor_area logic — avoid inflated lot sizes
+        s_type = subject.get("property_type", "")
+        report_sqft = subject.get("floor_area") or subject.get("living_area_sqft")
+        if not report_sqft:
+            est = subject.get("estimated_living_area_sqft")
+            if est:
+                max_reasonable = 5000 if s_type == "detached" else 3000
+                report_sqft = est if est <= max_reasonable else None
+
         report = {
             "subject": {
                 "address": subject.get("address", subject.get("full_address", "")),
                 "property_type": subject.get("property_type", ""),
                 "bedrooms": subject.get("bedrooms"),
                 "bathrooms": subject.get("bathrooms"),
-                "floor_area": subject.get("floor_area") or subject.get("living_area_sqft") or subject.get("estimated_living_area_sqft"),
+                "floor_area": report_sqft,
                 "year_built": subject.get("year_built"),
                 "assessed_value": assessed_value,
             },
@@ -550,7 +570,14 @@ class CMAEngine:
 
         s_year = subject.get("year_built")
         c_year = comp_row.get("year_built")
-        s_sqft = subject.get("floor_area") or subject.get("living_area_sqft") or subject.get("estimated_living_area_sqft")
+        # Use same floor_area logic as find_comparables — avoid inflated lot sizes
+        s_type = subject.get("property_type", "")
+        s_sqft = subject.get("floor_area") or subject.get("living_area_sqft")
+        if not s_sqft:
+            est = subject.get("estimated_living_area_sqft")
+            if est:
+                max_reasonable = 5000 if s_type == "detached" else 3000
+                s_sqft = est if est <= max_reasonable else None
         c_sqft = comp_row.get("floor_area")
         s_beds = subject.get("bedrooms")
         c_beds = comp_row.get("bedrooms")

@@ -226,6 +226,10 @@ class PredictionResponse(BaseModel):
     metadata: PredictionMetadata = Field(
         description="Prediction metadata",
     )
+    assessed_value: Optional[float] = Field(
+        None,
+        description="BC Assessment total assessed value (before SAR adjustment)",
+    )
     market_estimate: Optional[float] = Field(
         None,
         description="Market price estimate from sold-price model (if available)",
