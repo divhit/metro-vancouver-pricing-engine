@@ -79,6 +79,10 @@ export default function ValuationPage() {
   const [selectedCoords, setSelectedCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [selectedAddress, setSelectedAddress] = useState("");
 
+  // Address disambiguation: when multiple properties match
+  const [addressMatches, setAddressMatches] = useState<SearchResult[]>([]);
+  const [selectedMatch, setSelectedMatch] = useState<SearchResult | null>(null);
+
   const debouncedPidQuery = useDebounce(pidQuery, 250);
 
   const runPrediction = useCallback(async (overrideReq?: Partial<PredictionRequest>) => {
@@ -93,11 +97,19 @@ export default function ValuationPage() {
     } else if (mode === "pid" && pid) {
       req.pid = pid;
     } else if (mode === "address") {
-      if (selectedCoords) {
-        req.latitude = selectedCoords.lat;
-        req.longitude = selectedCoords.lng;
+      // If user selected a specific property from disambiguation, use its PID
+      if (selectedMatch) {
+        req.pid = selectedMatch.pid;
+      } else if (pid) {
+        // PID was set by single-match auto-select
+        req.pid = pid;
+      } else {
+        if (selectedCoords) {
+          req.latitude = selectedCoords.lat;
+          req.longitude = selectedCoords.lng;
+        }
+        if (address) req.address = address;
       }
-      if (address) req.address = address;
     } else if (mode === "coordinates" && lat && lon) {
       req.latitude = parseFloat(lat);
       req.longitude = parseFloat(lon);
@@ -127,7 +139,7 @@ export default function ValuationPage() {
     } finally {
       setLoading(false);
     }
-  }, [mode, pid, address, selectedCoords, lat, lon, propertyType]);
+  }, [mode, pid, address, selectedCoords, selectedMatch, lat, lon, propertyType]);
 
   // PID mode: fetch from internal DB
   useEffect(() => {
@@ -184,6 +196,68 @@ export default function ValuationPage() {
         setSelectedCoords(coords);
         setLat(coords.lat.toString());
         setLon(coords.lng.toString());
+        setSelectedMatch(null);
+        setAddressMatches([]);
+
+        // Extract street number + full street from Google address and search our DB
+        // e.g. "312 East 40th Avenue, Vancouver, BC, Canada" → search "312 40TH AVE E"
+        const beforeCity = formattedAddr.replace(/,.*$/, "").trim(); // "312 East 40th Avenue"
+        const streetNum = beforeCity.match(/^(\d+)/)?.[1];
+        if (streetNum) {
+          // Normalize: "East 40th Avenue" → "40TH AVE E"
+          let streetPart = beforeCity.replace(/^\d+\s*/, "").trim(); // "East 40th Avenue"
+          // Extract direction if at start or end
+          let dir = "";
+          const dirMatch = streetPart.match(/^(East|West|North|South)\b\s*/i);
+          if (dirMatch) {
+            dir = dirMatch[1].charAt(0).toUpperCase(); // "E"
+            streetPart = streetPart.replace(dirMatch[0], "").trim();
+          }
+          // Abbreviate common suffixes
+          streetPart = streetPart
+            .replace(/\bAvenue\b/i, "AVE")
+            .replace(/\bStreet\b/i, "ST")
+            .replace(/\bDrive\b/i, "DR")
+            .replace(/\bRoad\b/i, "RD")
+            .replace(/\bBoulevard\b/i, "BLVD")
+            .replace(/\bCrescent\b/i, "CRES")
+            .replace(/\bPlace\b/i, "PL")
+            .replace(/\bCourt\b/i, "CT");
+          const searchQuery = `${streetNum} ${streetPart}${dir ? " " + dir : ""}`.toUpperCase();
+
+          api.searchProperties(searchQuery, 10).then((matches) => {
+            // Filter to only exact civic number + street matches
+            const exact = matches.filter((m) => {
+              const mAddr = m.address.toUpperCase();
+              return mAddr.startsWith(streetNum + " ") && mAddr.includes(streetPart.split(/\s+/)[0].toUpperCase());
+            });
+            // Further narrow: if direction specified, prefer matches with that direction
+            let filtered = exact;
+            if (dir && exact.length > 1) {
+              const withDir = exact.filter((m) => m.address.toUpperCase().endsWith(" " + dir));
+              if (withDir.length > 0) filtered = withDir;
+            }
+
+            if (filtered.length > 1) {
+              setAddressMatches(filtered);
+            } else if (filtered.length === 1) {
+              setSelectedMatch(filtered[0]);
+              setPid(filtered[0].pid);
+              if (filtered[0].property_type) setPropertyType(filtered[0].property_type);
+              setAddressMatches([]);
+            } else if (exact.length > 0) {
+              // Fallback to unfiltered exact matches
+              if (exact.length > 1) {
+                setAddressMatches(exact);
+              } else {
+                setSelectedMatch(exact[0]);
+                setPid(exact[0].pid);
+                if (exact[0].property_type) setPropertyType(exact[0].property_type);
+                setAddressMatches([]);
+              }
+            }
+          }).catch(() => {});
+        }
       });
 
       autocompleteRef.current = ac;
@@ -234,6 +308,11 @@ export default function ValuationPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setShowPidDropdown(false);
+    // Block submission if disambiguation is needed
+    if (mode === "address" && addressMatches.length > 1 && !selectedMatch) {
+      setError("Please select one of the matching properties above before running valuation.");
+      return;
+    }
     runPrediction();
   }
 
@@ -336,12 +415,68 @@ export default function ValuationPage() {
                   />
                 </div>
                 {selectedCoords && (
-                  <div className="flex items-center gap-2 mt-2">
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-teal-50 border border-teal-200 text-[11px] text-teal-700">
-                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
-                      Address found
-                    </span>
-                    <span className="text-[10px] text-sand-400">{selectedCoords.lat.toFixed(5)}, {selectedCoords.lng.toFixed(5)}</span>
+                  <div className="mt-2 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-teal-50 border border-teal-200 text-[11px] text-teal-700">
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                        Address found
+                      </span>
+                      <span className="text-[10px] text-sand-400">{selectedCoords.lat.toFixed(5)}, {selectedCoords.lng.toFixed(5)}</span>
+                    </div>
+
+                    {/* Disambiguation: multiple properties at this address */}
+                    {addressMatches.length > 1 && (
+                      <div className="p-3 rounded-lg border border-amber-200 bg-amber-50/50">
+                        <p className="text-xs font-medium text-amber-800 mb-2">
+                          Multiple properties found at this address — please select one:
+                        </p>
+                        <div className="space-y-1.5">
+                          {addressMatches.map((m) => (
+                            <button
+                              key={m.pid}
+                              type="button"
+                              onClick={() => {
+                                setSelectedMatch(m);
+                                setPid(m.pid);
+                                if (m.property_type) setPropertyType(m.property_type);
+                                setAddressMatches([]);
+                              }}
+                              className={`w-full text-left px-3 py-2 rounded-md border text-xs transition ${
+                                selectedMatch?.pid === m.pid
+                                  ? "border-teal-400 bg-teal-50 text-teal-800"
+                                  : "border-sand-200 bg-white hover:border-teal-300 hover:bg-teal-50/30 text-sand-700"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <span className="font-medium">{m.address}</span>
+                                  <span className="ml-2 text-sand-400">PID: {m.pid}</span>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                  <span className="px-1.5 py-0.5 rounded bg-sand-100 text-[10px] font-medium uppercase">
+                                    {m.property_type}
+                                  </span>
+                                  <span className="text-sand-500">
+                                    {m.assessed_value ? `$${(m.assessed_value / 1000).toFixed(0)}K` : ""}
+                                  </span>
+                                </div>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Show selected property confirmation */}
+                    {selectedMatch && addressMatches.length === 0 && (
+                      <div className="flex items-center gap-2 text-[11px] text-teal-700">
+                        <span className="font-medium">{selectedMatch.address}</span>
+                        <span className="px-1.5 py-0.5 rounded bg-teal-50 border border-teal-200 text-[10px] font-medium uppercase">
+                          {selectedMatch.property_type}
+                        </span>
+                        <span className="text-sand-400">PID: {selectedMatch.pid}</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

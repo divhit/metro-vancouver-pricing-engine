@@ -855,8 +855,10 @@ async def search_properties(
 
         if numeric_parts:
             target_civic = int(numeric_parts[0].replace("-", ""))
-            # Try exact civic + street match first
-            exact_mask = street_mask & (civic_col == target_civic)
+            # Match civic_number OR to_civic_number (duplex/strata units use
+            # to_civic_number for the real street address, civic_number = unit #)
+            to_civic_col = df["to_civic_number"].fillna(0).astype(int) if "to_civic_number" in df.columns else pd.Series(0, index=df.index)
+            exact_mask = street_mask & ((civic_col == target_civic) | (to_civic_col == target_civic))
             if exact_mask.sum() > 0:
                 # Sort by most recent assessment year first
                 exact_df = df[exact_mask]
@@ -885,18 +887,30 @@ async def search_properties(
 
     out = []
     for _, row in results.iterrows():
-        # Use unified civic_number if available, else from_civic → to_civic
+        # Build display address: for duplex/strata units where civic_number
+        # is the unit number and to_civic_number is the real street address,
+        # show "312 40TH AVE E (Unit 1)" instead of "1 40TH AVE E"
         _cn = row.get("civic_number")
-        if pd.notna(_cn) and int(_cn) > 0:
+        _to = row.get("to_civic_number")
+        _from = row.get("from_civic_number")
+        street_nm = str(row.get("street_name", ""))
+        unit_suffix = ""
+
+        if (pd.notna(_to) and int(_to) > 0 and
+            pd.notna(_cn) and int(_cn) > 0 and
+            int(_cn) != int(_to) and int(_cn) < 100):
+            # Likely a unit: civic_number is small (unit #), to_civic is street address
+            civic_num = int(_to)
+            unit_suffix = f" (Unit {int(_cn)})"
+        elif pd.notna(_cn) and int(_cn) > 0:
             civic_num = int(_cn)
-        elif pd.notna(row.get("from_civic_number")) and int(row["from_civic_number"]) > 0:
-            civic_num = int(row["from_civic_number"])
-        elif pd.notna(row.get("to_civic_number")) and int(row["to_civic_number"]) > 0:
-            civic_num = int(row["to_civic_number"])
+        elif pd.notna(_from) and int(_from) > 0:
+            civic_num = int(_from)
+        elif pd.notna(_to) and int(_to) > 0:
+            civic_num = int(_to)
         else:
             civic_num = None
-        street_nm = str(row.get("street_name", ""))
-        addr = f"{civic_num} {street_nm}" if civic_num else street_nm
+        addr = f"{civic_num} {street_nm}{unit_suffix}" if civic_num else street_nm
         neighbourhood_code = str(row.get("neighbourhood_code", ""))
         out.append({
             "pid": str(row.get("pid", "")),
@@ -931,9 +945,17 @@ async def generate_cma(request: CMARequest) -> CMAResponse:
         if not match.empty:
             property_row = match.iloc[0]
     elif request.address:
-        # Try address search
+        # Try address search with direction awareness (E/W/N/S)
         import re
         addr_upper = request.address.upper().strip()
+        # Remove city/province/country suffixes from Google Places addresses
+        addr_upper = re.sub(r",\s*(VANCOUVER|BC|CANADA).*$", "", addr_upper, flags=re.IGNORECASE).strip()
+        # Normalize direction words: "EAST" → "E", "WEST" → "W"
+        addr_upper = re.sub(r"\bEAST\b", "E", addr_upper)
+        addr_upper = re.sub(r"\bWEST\b", "W", addr_upper)
+        addr_upper = re.sub(r"\bNORTH\b", "N", addr_upper)
+        addr_upper = re.sub(r"\bSOUTH\b", "S", addr_upper)
+
         m = re.match(r"^(\d+)\s+(.+)", addr_upper)
         if m:
             civic_num = int(m.group(1))
@@ -942,12 +964,38 @@ async def generate_cma(request: CMARequest) -> CMAResponse:
                 civic_col = _properties_df["civic_number"].fillna(0).astype(int)
             else:
                 civic_col = _properties_df["from_civic_number"].fillna(0).astype(int)
+            # Also check to_civic_number for duplex/strata units
+            to_civic_col = _properties_df["to_civic_number"].fillna(0).astype(int) if "to_civic_number" in _properties_df.columns else pd.Series(0, index=_properties_df.index)
+            civic_match = (civic_col == civic_num) | (to_civic_col == civic_num)
             street_col = _properties_df["street_name"].fillna("").str.upper()
-            mask = (civic_col == civic_num) & street_col.str.contains(
-                street_part.split()[0] if street_part else "", na=False
-            )
+
+            # Try full street match first (e.g. "40TH AVE E")
+            mask = civic_match & (street_col == street_part)
+            if not mask.any():
+                # Try contains with all significant words
+                words = [w for w in street_part.split() if len(w) > 1]
+                mask = civic_match
+                for word in words:
+                    mask = mask & street_col.str.contains(re.escape(word), na=False)
+
             if mask.any():
-                property_row = _properties_df[mask].iloc[0]
+                if mask.sum() == 1:
+                    property_row = _properties_df[mask].iloc[0]
+                else:
+                    # Multiple matches — prefer exact or closest match
+                    # If lat/lon also provided, pick nearest
+                    if request.latitude and request.longitude:
+                        candidates = _properties_df[mask]
+                        if "latitude" in candidates.columns:
+                            dists = (
+                                (candidates["latitude"] - request.latitude) ** 2
+                                + (candidates["longitude"] - request.longitude) ** 2
+                            )
+                            property_row = candidates.loc[dists.idxmin()]
+                        else:
+                            property_row = candidates.iloc[0]
+                    else:
+                        property_row = _properties_df[mask].iloc[0]
     elif request.latitude and request.longitude:
         # Nearest property lookup
         if "latitude" in _properties_df.columns and "longitude" in _properties_df.columns:
