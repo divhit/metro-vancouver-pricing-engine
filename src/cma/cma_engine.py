@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 _MLS_TYPE_MAP = {
     "Apartment/Condo": "condo",
     "Townhouse": "townhome",
-    "1/2 Duplex": "detached",
+    "1/2 Duplex": "duplex",
     "House/Single Family": "detached",
     "HOUSE": "detached",
     "House with Acreage": "detached",
@@ -39,7 +39,16 @@ _MLS_TYPE_MAP = {
 _CANONICAL_TO_MLS = {
     "condo": ["Apartment/Condo"],
     "townhome": ["Townhouse"],
-    "detached": ["1/2 Duplex", "House/Single Family", "HOUSE", "House with Acreage"],
+    "duplex": ["1/2 Duplex"],
+    "detached": ["House/Single Family", "HOUSE", "House with Acreage"],
+}
+
+# Types that can fall back to each other if too few comps
+_TYPE_FALLBACKS = {
+    "duplex": ["detached"],  # duplex can widen to detached if needed
+    "detached": [],
+    "condo": [],
+    "townhome": [],
 }
 
 
@@ -249,22 +258,10 @@ class CMAEngine:
 
         candidates = sold[mask].copy()
 
-        # If too few candidates, widen search
-        if len(candidates) < 3:
-            logger.info("Only %d candidates in %d days — widening to 120 days, 5km",
-                        len(candidates), max_age_days)
-            cutoff_date = datetime.now() - timedelta(days=120)
-            mask = sold["sold_dt"].notna() & (sold["sold_dt"] >= cutoff_date)
-            if same_type and s_type:
-                mask &= sold["canonical_type"] == s_type
-            mask &= has_coords
-            candidates = sold[mask].copy()
-            max_radius_m = 5000
-
         if candidates.empty:
             return []
 
-        # Compute distances
+        # Compute distances first, then widen search if too few within radius
         if s_lat and s_lon:
             candidates["distance_m"] = candidates.apply(
                 lambda r: _haversine(s_lat, s_lon, r["latitude"], r["longitude"]),
@@ -277,6 +274,46 @@ class CMAEngine:
             if s_sub:
                 candidates = candidates[candidates["sub_area"] == s_sub]
             candidates["distance_m"] = 0.0
+
+        # Widen search progressively if too few comps after distance filter
+        if len(candidates) < 3:
+            logger.info("Only %d candidates within %dm in %d days — widening to 120 days, 5km",
+                        len(candidates), max_radius_m, max_age_days)
+            cutoff_date = datetime.now() - timedelta(days=120)
+            mask = sold["sold_dt"].notna() & (sold["sold_dt"] >= cutoff_date)
+            if same_type and s_type:
+                mask &= sold["canonical_type"] == s_type
+            mask &= has_coords
+            wider = sold[mask].copy()
+            if s_lat and s_lon and not wider.empty:
+                wider["distance_m"] = wider.apply(
+                    lambda r: _haversine(s_lat, s_lon, r["latitude"], r["longitude"]),
+                    axis=1,
+                )
+                wider = wider[wider["distance_m"] <= 5000]
+            candidates = wider
+            max_radius_m = 5000
+
+        # If still too few, try fallback property types (e.g. duplex → detached)
+        if len(candidates) < 3 and same_type and s_type:
+            fallbacks = _TYPE_FALLBACKS.get(s_type, [])
+            if fallbacks:
+                logger.info("Only %d %s candidates — adding fallback types: %s",
+                            len(candidates), s_type, fallbacks)
+                allowed_types = [s_type] + fallbacks
+                cutoff_date = datetime.now() - timedelta(days=120)
+                mask = sold["sold_dt"].notna() & (sold["sold_dt"] >= cutoff_date)
+                mask &= sold["canonical_type"].isin(allowed_types)
+                mask &= has_coords
+                wider = sold[mask].copy()
+                if s_lat and s_lon and not wider.empty:
+                    wider["distance_m"] = wider.apply(
+                        lambda r: _haversine(s_lat, s_lon, r["latitude"], r["longitude"]),
+                        axis=1,
+                    )
+                    wider = wider[wider["distance_m"] <= 5000]
+                candidates = wider
+                max_radius_m = 5000
 
         if candidates.empty:
             return []
@@ -600,7 +637,10 @@ class CMAEngine:
             except (ValueError, TypeError):
                 pass
 
-        # Size adjustment: $/sqft pro-rata
+        # Size adjustment: use BUILDING value per sqft, not total price per sqft.
+        # In Vancouver, most detached/duplex value is in the LAND, not the building.
+        # The building depreciates over ~20 years and then it's basically land value.
+        # We estimate the improvement (building) portion and adjust based on that.
         if s_sqft and c_sqft:
             try:
                 s_sqft = float(s_sqft)
@@ -608,14 +648,38 @@ class CMAEngine:
                 if c_sqft > 0 and s_sqft > 0:
                     sqft_diff = s_sqft - c_sqft
                     if abs(sqft_diff) > 10:  # Ignore trivial differences
-                        ppsf = sold_price / c_sqft
+                        # For condos/townhomes, more of the value is in the unit itself
+                        if s_type in ("condo", "townhome"):
+                            building_pct = 0.70
+                        else:
+                            # For detached/duplex: building portion depends on age
+                            # New builds: ~40-50% building. Old homes (20+ yr): ~15-25% building.
+                            c_age = None
+                            if c_year:
+                                try:
+                                    c_age = datetime.now().year - int(c_year)
+                                except (ValueError, TypeError):
+                                    pass
+                            if c_age is not None and c_age <= 5:
+                                building_pct = 0.45  # New construction
+                            elif c_age is not None and c_age <= 15:
+                                building_pct = 0.35  # Relatively new
+                            elif c_age is not None and c_age <= 25:
+                                building_pct = 0.25  # Depreciating
+                            else:
+                                building_pct = 0.15  # Old home — mostly land value
+
+                        # Only the building portion drives size-based value differences
+                        building_value = sold_price * building_pct
+                        ppsf = building_value / c_sqft
                         dollar = ppsf * sqft_diff
-                        # Cap at ±30%
-                        dollar = max(-sold_price * 0.30, min(sold_price * 0.30, dollar))
+                        # Cap at ±15% for detached/duplex, ±25% for condos
+                        max_cap = 0.25 if s_type in ("condo", "townhome") else 0.15
+                        dollar = max(-sold_price * max_cap, min(sold_price * max_cap, dollar))
                         adj_price += dollar
                         adjustments.append({
                             "name": "Size",
-                            "detail": f"Subject {abs(sqft_diff):.0f} sqft {'larger' if sqft_diff > 0 else 'smaller'}",
+                            "detail": f"Subject {abs(sqft_diff):.0f} sqft {'larger' if sqft_diff > 0 else 'smaller'} (bldg value ~{building_pct:.0%} of total)",
                             "percentage": round(dollar / sold_price * 100, 1),
                             "dollar": round(dollar),
                         })

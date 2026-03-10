@@ -1012,7 +1012,18 @@ async def generate_cma(request: CMARequest) -> CMAResponse:
         subject["address"] = str(property_row.get("full_address", ""))
         subject["latitude"] = float(property_row.get("latitude", 0))
         subject["longitude"] = float(property_row.get("longitude", 0))
-        subject["property_type"] = str(property_row.get("property_type", ""))
+        # Detect duplex: if civic_number is a small unit number and to_civic_number
+        # holds the real street address, this is a duplex unit
+        raw_type = str(property_row.get("property_type", ""))
+        if raw_type == "detached":
+            _cn = property_row.get("civic_number")
+            _to = property_row.get("to_civic_number")
+            if (pd.notna(_to) and pd.notna(_cn)
+                and int(_to) > 0 and int(_cn) > 0
+                and int(_cn) != int(_to) and int(_cn) < 100):
+                raw_type = "duplex"
+                logger.info("Detected duplex unit: civic=%s, to_civic=%s → type=duplex", _cn, _to)
+        subject["property_type"] = raw_type
         subject["year_built"] = (
             int(property_row["year_built"]) if pd.notna(property_row.get("year_built")) else None
         )
