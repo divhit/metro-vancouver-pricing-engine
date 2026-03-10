@@ -45,22 +45,51 @@ TRACKED_REGIONS = [
 # Property types
 PROPERTY_TYPES = ["HSE", "APT", "TWN", "PAD", "MUF"]
 
-# RSS feeds for Vancouver real estate news
+# RSS feeds for Vancouver real estate news — curated for RE relevance
 NEWS_FEEDS = [
     {
-        "name": "STOREYS Vancouver",
+        "name": "STOREYS",
         "url": "https://storeys.com/feeds/cities/vancouver.rss",
         "category": "news",
+        "min_relevance": 0.0,  # STOREYS is RE-only, always relevant
+    },
+    {
+        "name": "Rennie",
+        "url": "https://renfrewrealty.ca/feed/",
+        "category": "market_analysis",
+        "min_relevance": 0.0,
+        "optional": True,  # May not have RSS feed
+    },
+    {
+        "name": "UrbanYVR",
+        "url": "https://urbanyvr.com/feed",
+        "category": "development",
+        "min_relevance": 0.0,  # UrbanYVR is development-focused
+    },
+    {
+        "name": "Vancouver Sun Real Estate",
+        "url": "https://vancouversun.com/category/business/real-estate/feed",
+        "category": "news",
+        "min_relevance": 0.0,
     },
     {
         "name": "Daily Hive Urbanized",
         "url": "https://dailyhive.com/feed/vancouver",
         "category": "news",
+        "min_relevance": 0.33,  # General feed — only include RE-relevant articles
     },
-{
-        "name": "Vancouver Sun Real Estate",
-        "url": "https://vancouversun.com/category/business/real-estate/feed",
-        "category": "news",
+    {
+        "name": "REBGV",
+        "url": "https://www.gvrealtors.ca/news.html",
+        "category": "market_data",
+        "min_relevance": 0.0,
+        "optional": True,  # RSS may not be available
+    },
+    {
+        "name": "BCREA",
+        "url": "https://www.bcrea.bc.ca/feed/",
+        "category": "market_data",
+        "min_relevance": 0.0,
     },
 ]
 
@@ -72,12 +101,23 @@ SMTP_PORT = int(os.environ.get("INTEL_SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("INTEL_SMTP_USER", "")
 SMTP_PASS = os.environ.get("INTEL_SMTP_PASS", "")
 
-# Real estate keywords for filtering news
+# Real estate keywords for filtering news (used to score relevance)
 RE_KEYWORDS = [
-    "real estate", "housing", "condo", "townhouse", "detached",
-    "presale", "pre-sale", "development", "rezoning", "rezone",
-    "mortgage", "interest rate", "benchmark price", "sales-to-active",
-    "MLS", "REBGV", "GVR", "property tax", "assessment",
-    "Vancouver", "Burnaby", "Richmond", "North Vancouver",
-    "strata", "rental", "vacancy", "housing start",
+    # Core RE terms
+    "real estate", "housing market", "home sales", "home prices",
+    "condo", "townhouse", "townhome", "detached", "single-family",
+    "presale", "pre-sale", "new construction", "new build",
+    # Development & zoning
+    "development", "rezoning", "rezone", "density", "tower",
+    "housing start", "building permit", "construction",
+    # Market & finance
+    "mortgage", "interest rate", "bank of canada", "benchmark price",
+    "sales-to-active", "price index", "affordability",
+    "property tax", "assessment", "property value",
+    # Industry
+    "MLS", "REBGV", "GVR", "BCREA", "CMHC", "realtor", "listing",
+    "rennie", "sold", "asking price", "over asking",
+    # Location (boost general articles mentioning RE areas)
+    "strata", "rental", "vacancy", "lease",
+    "Vancouver housing", "Metro Vancouver",
 ]

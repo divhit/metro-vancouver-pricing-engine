@@ -47,6 +47,7 @@ def fetch_feed(feed_config: dict) -> list[dict]:
     name = feed_config["name"]
     url = feed_config["url"]
     category = feed_config.get("category", "news")
+    min_relevance = feed_config.get("min_relevance", 0.0)
 
     logger.info(f"Fetching RSS feed: {name}")
     try:
@@ -71,6 +72,10 @@ def fetch_feed(feed_config: dict) -> list[dict]:
         pub_date = _parse_date(entry)
         relevance = _compute_relevance(title, summary)
 
+        # Skip irrelevant articles from general feeds
+        if relevance < min_relevance:
+            continue
+
         articles.append({
             "feed_name": name,
             "title": title,
@@ -81,7 +86,7 @@ def fetch_feed(feed_config: dict) -> list[dict]:
             "relevance_score": round(relevance, 2),
         })
 
-    logger.info(f"  Parsed {len(articles)} articles from {name}")
+    logger.info(f"  Parsed {len(articles)} relevant articles from {name} (filtered at {min_relevance} relevance)")
     return articles
 
 
