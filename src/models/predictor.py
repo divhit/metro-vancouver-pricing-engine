@@ -611,6 +611,7 @@ class PropertyPredictor:
         "townhome": ["condo", "detached"],
         "condo": ["townhome", "detached"],
         "detached": ["condo", "townhome"],
+        "duplex": ["detached", "townhome"],
     }
 
     def _scan_available_models(self) -> set[str]:
@@ -690,9 +691,12 @@ class PropertyPredictor:
             logger.warning("No assessed value for market prediction")
             return None
 
+        # For SAR lookup, duplex uses detached SAR (no separate duplex sales data yet)
+        sar_ptype = "detached" if ptype == "duplex" else ptype
+
         # Load neighbourhood SAR lookup (cached)
-        hood_sar, hood_n = self._get_neighbourhood_sar(hood, ptype)
-        citywide_sar, citywide_n = self._get_neighbourhood_sar("_all", ptype)
+        hood_sar, hood_n = self._get_neighbourhood_sar(hood, sar_ptype)
+        citywide_sar, citywide_n = self._get_neighbourhood_sar("_all", sar_ptype)
 
         if hood_sar is None and citywide_sar is None:
             return None
@@ -714,7 +718,7 @@ class PropertyPredictor:
 
         # Try ML model for property-level adjustment
         ml_sar = None
-        result = self._load_market_model(ptype)
+        result = self._load_market_model(sar_ptype)
         if result is not None:
             model, metadata = result
 

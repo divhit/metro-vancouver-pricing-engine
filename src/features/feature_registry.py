@@ -15,6 +15,7 @@ class PropertyType(Enum):
     CONDO = "condo"
     TOWNHOME = "townhome"
     DETACHED = "detached"
+    DUPLEX = "duplex"
     DEVELOPMENT_LAND = "development_land"
     ALL = "all"
 

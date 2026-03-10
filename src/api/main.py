@@ -155,13 +155,42 @@ async def lifespan(app: FastAPI):
                         n_fixed,
                     )
             # ----------------------------------------------------------
+            # Duplex detection.
+            # When a single-family lot is redeveloped as a duplex, the
+            # original PID stays and 1+ new PIDs are created — so you get
+            # 2+ "detached" PIDs sharing the same (to_civic_number, street).
+            # BC Assessment still classifies them as "detached", but for
+            # CMA and valuation they should be "duplex".
+            # ----------------------------------------------------------
+            if "to_civic_number" in _properties_df.columns:
+                _to_civic = _properties_df["to_civic_number"].fillna(0).astype(int)
+                _street = _properties_df["street_name"].fillna("").str.upper().str.strip()
+                _properties_df["_lot_key"] = _to_civic.astype(str) + "|" + _street
+                _valid_lot = _to_civic > 0
+                _det_mask = _valid_lot & (_properties_df["property_type"] == "detached")
+                _det_per_lot = _properties_df[_det_mask].groupby("_lot_key").size()
+                _duplex_lots = set(_det_per_lot[_det_per_lot >= 2].index)
+                _is_duplex = _properties_df["_lot_key"].isin(_duplex_lots) & _det_mask
+                n_duplex = _is_duplex.sum()
+                if n_duplex > 0:
+                    _properties_df.loc[_is_duplex, "property_type"] = "duplex"
+                    logger.info(
+                        "Reclassified %d properties as 'duplex' "
+                        "(%d lots with 2+ detached PIDs at same address)",
+                        n_duplex, len(_duplex_lots),
+                    )
+                _properties_df.drop(columns=["_lot_key"], inplace=True)
+
+            # ----------------------------------------------------------
             # Year_built propagation for strata subdivisions.
             # Strata PIDs often have NaN year_built because BC Assessment
             # creates new PIDs without carrying over the parent lot's data.
             # Fix by looking up same (civic_number, street_name) properties.
             # ----------------------------------------------------------
             if "year_built" in _properties_df.columns and "street_name" in _properties_df.columns:
-                missing_yb = _properties_df["year_built"].isna()
+                # Skip duplexes — they are new construction on demolished lots,
+                # so the old lot's year_built would be wrong (the old house, not the new duplex)
+                missing_yb = _properties_df["year_built"].isna() & (_properties_df["property_type"] != "duplex")
                 n_missing_before = missing_yb.sum()
                 if n_missing_before > 0:
                     # Build lookup: (civic_number, street_name) -> max year_built
@@ -1012,18 +1041,7 @@ async def generate_cma(request: CMARequest) -> CMAResponse:
         subject["address"] = str(property_row.get("full_address", ""))
         subject["latitude"] = float(property_row.get("latitude", 0))
         subject["longitude"] = float(property_row.get("longitude", 0))
-        # Detect duplex: if civic_number is a small unit number and to_civic_number
-        # holds the real street address, this is a duplex unit
-        raw_type = str(property_row.get("property_type", ""))
-        if raw_type == "detached":
-            _cn = property_row.get("civic_number")
-            _to = property_row.get("to_civic_number")
-            if (pd.notna(_to) and pd.notna(_cn)
-                and int(_to) > 0 and int(_cn) > 0
-                and int(_cn) != int(_to) and int(_cn) < 100):
-                raw_type = "duplex"
-                logger.info("Detected duplex unit: civic=%s, to_civic=%s → type=duplex", _cn, _to)
-        subject["property_type"] = raw_type
+        subject["property_type"] = str(property_row.get("property_type", ""))
         subject["year_built"] = (
             int(property_row["year_built"]) if pd.notna(property_row.get("year_built")) else None
         )
