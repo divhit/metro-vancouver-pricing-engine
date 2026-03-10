@@ -301,3 +301,90 @@ class HealthResponse(BaseModel):
         description="Data freshness per source",
     )
     version: str = Field(description="API version string")
+
+
+# ============================================================
+# CMA (COMPARATIVE MARKET ANALYSIS)
+# ============================================================
+
+
+class CMARequest(BaseModel):
+    """Request body for the /api/cma endpoint."""
+
+    pid: Optional[str] = Field(None, description="BC Assessment PID")
+    address: Optional[str] = Field(None, description="Street address")
+    latitude: Optional[float] = Field(None, ge=48.5, le=49.6)
+    longitude: Optional[float] = Field(None, ge=-123.5, le=-122.5)
+    property_type: Optional[str] = Field(None, description="condo, townhome, or detached")
+    bedrooms: Optional[int] = Field(None, description="Number of bedrooms")
+    bathrooms: Optional[float] = Field(None, description="Number of bathrooms")
+    floor_area: Optional[int] = Field(None, description="Living area in sqft")
+    year_built: Optional[int] = Field(None, description="Year of construction")
+    max_comps: int = Field(default=10, ge=1, le=15, description="Max comparables to return")
+    max_radius_m: float = Field(default=2000, description="Search radius in metres")
+    max_age_days: int = Field(default=60, description="Max age of sales in days")
+
+    @model_validator(mode="after")
+    def validate_identifier(self) -> CMARequest:
+        has_pid = self.pid is not None
+        has_address = self.address is not None
+        has_coords = self.latitude is not None and self.longitude is not None
+        if not (has_pid or has_address or has_coords):
+            raise ValueError("At least one of 'pid', 'address', or (lat+lon) required.")
+        return self
+
+
+class CMAComparable(BaseModel):
+    """A comparable sold property in a CMA report."""
+
+    mls_number: str = Field(description="MLS listing number")
+    address: str = Field(description="Street address")
+    sold_price: int = Field(description="Actual sale price ($)")
+    list_price: Optional[int] = Field(None, description="Original list price ($)")
+    sold_date: str = Field(description="Date sold")
+    dom: Optional[int] = Field(None, description="Days on market")
+    bedrooms: Optional[int] = None
+    bathrooms: Optional[float] = None
+    floor_area: Optional[int] = Field(None, description="Living area sqft")
+    year_built: Optional[int] = None
+    property_type: str = Field(description="MLS property type")
+    distance_m: float = Field(description="Distance from subject (metres)")
+    similarity_score: float = Field(description="Similarity score (lower = better)")
+    assessed_value: Optional[int] = Field(None, description="BC Assessment value ($)")
+    sar: Optional[float] = Field(None, description="Sale-to-assessment ratio")
+    list_to_sold: Optional[float] = Field(None, description="List-to-sold ratio")
+    adjusted_price: int = Field(description="Price adjusted toward subject ($)")
+    adjustments: list[dict] = Field(description="Price adjustments applied")
+
+
+class CMAPriceRange(BaseModel):
+    """Price range derived from comparable sales."""
+
+    low: int = Field(description="25th percentile of adjusted prices")
+    median: int = Field(description="Median adjusted price")
+    high: int = Field(description="75th percentile of adjusted prices")
+    mean: int = Field(description="Mean adjusted price")
+
+
+class CMARecommendation(BaseModel):
+    """Final pricing recommendation blending CMA and SAR estimates."""
+
+    estimated_value: Optional[int] = Field(None, description="Blended estimate ($)")
+    estimated_range: Optional[dict] = Field(None, description="Recommended price range")
+    confidence: str = Field(description="high, moderate, or low")
+    method: Optional[str] = Field(None, description="Blending method used")
+    note: Optional[str] = Field(None, description="Additional notes")
+
+
+class CMAResponse(BaseModel):
+    """Full CMA report response."""
+
+    subject: dict = Field(description="Subject property details")
+    comparables: list[CMAComparable] = Field(description="Comparable sold properties")
+    comparable_count: int = Field(description="Number of comparables found")
+    cma_estimate: Optional[int] = Field(None, description="CMA median estimate ($)")
+    cma_range: Optional[CMAPriceRange] = Field(None, description="CMA price range")
+    sar_estimate: Optional[int] = Field(None, description="SAR model estimate ($)")
+    assessed_value: Optional[int] = Field(None, description="BC Assessment value ($)")
+    market_stats: Optional[dict] = Field(None, description="Market statistics from comps")
+    recommendation: CMARecommendation = Field(description="Final pricing recommendation")

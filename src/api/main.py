@@ -3,6 +3,7 @@ Metro Vancouver Property Pricing Engine API.
 
 Endpoints:
 - POST /api/predict         -- Generate property valuation
+- POST /api/cma             -- Comparative Market Analysis report
 - GET  /api/property/{pid}  -- Enriched property details
 - GET  /api/market/{code}   -- Market summary for a neighbourhood
 - GET  /api/market/all      -- Market summaries for all 22 local areas
@@ -26,6 +27,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.cache import PredictionCache
 from src.api.schemas import (
     AdjustmentDTO,
+    CMAComparable,
+    CMAPriceRange,
+    CMARecommendation,
+    CMARequest,
+    CMAResponse,
     ComparableDTO,
     ConfidenceInterval,
     HealthResponse,
@@ -903,6 +909,154 @@ async def search_properties(
         })
 
     return out
+
+
+@app.post("/api/cma", response_model=CMAResponse)
+async def generate_cma(request: CMARequest) -> CMAResponse:
+    """Generate a Comparative Market Analysis report.
+
+    Finds up to 10 similar recently-sold properties near the subject,
+    adjusts their sale prices, and produces a CMA price range alongside
+    the SAR-based market estimate.
+    """
+    if _properties_df is None or _properties_df.empty:
+        raise HTTPException(status_code=503, detail="Property data not loaded")
+
+    # Resolve subject property
+    subject = {}
+    property_row = None
+
+    if request.pid:
+        match = _properties_df[_properties_df["pid"].astype(str) == str(request.pid)]
+        if not match.empty:
+            property_row = match.iloc[0]
+    elif request.address:
+        # Try address search
+        import re
+        addr_upper = request.address.upper().strip()
+        m = re.match(r"^(\d+)\s+(.+)", addr_upper)
+        if m:
+            civic_num = int(m.group(1))
+            street_part = m.group(2).strip()
+            if "civic_number" in _properties_df.columns:
+                civic_col = _properties_df["civic_number"].fillna(0).astype(int)
+            else:
+                civic_col = _properties_df["from_civic_number"].fillna(0).astype(int)
+            street_col = _properties_df["street_name"].fillna("").str.upper()
+            mask = (civic_col == civic_num) & street_col.str.contains(
+                street_part.split()[0] if street_part else "", na=False
+            )
+            if mask.any():
+                property_row = _properties_df[mask].iloc[0]
+    elif request.latitude and request.longitude:
+        # Nearest property lookup
+        if "latitude" in _properties_df.columns and "longitude" in _properties_df.columns:
+            dists = (
+                (_properties_df["latitude"] - request.latitude) ** 2
+                + (_properties_df["longitude"] - request.longitude) ** 2
+            )
+            nearest_idx = dists.idxmin()
+            property_row = _properties_df.loc[nearest_idx]
+
+    # Build subject dict from resolved property + overrides
+    if property_row is not None:
+        subject["pid"] = str(property_row.get("pid", ""))
+        subject["address"] = str(property_row.get("full_address", ""))
+        subject["latitude"] = float(property_row.get("latitude", 0))
+        subject["longitude"] = float(property_row.get("longitude", 0))
+        subject["property_type"] = str(property_row.get("property_type", ""))
+        subject["year_built"] = (
+            int(property_row["year_built"]) if pd.notna(property_row.get("year_built")) else None
+        )
+        subject["total_assessed_value"] = float(property_row.get("total_assessed_value", 0))
+        subject["estimated_living_area_sqft"] = (
+            float(property_row["estimated_living_area_sqft"])
+            if pd.notna(property_row.get("estimated_living_area_sqft")) else None
+        )
+        subject["neighbourhood_code"] = str(property_row.get("neighbourhood_code", ""))
+        subject["zoning_district"] = str(property_row.get("zoning_district", ""))
+    else:
+        subject["latitude"] = request.latitude or 0
+        subject["longitude"] = request.longitude or 0
+        subject["address"] = request.address or ""
+
+    # Apply user overrides
+    if request.property_type:
+        subject["property_type"] = request.property_type
+    if request.bedrooms is not None:
+        subject["bedrooms"] = request.bedrooms
+    if request.bathrooms is not None:
+        subject["bathrooms"] = request.bathrooms
+    if request.floor_area is not None:
+        subject["floor_area"] = request.floor_area
+    if request.year_built is not None:
+        subject["year_built"] = request.year_built
+
+    # Get SAR-based market estimate if predictor is available
+    market_estimate = None
+    if _predictor and property_row is not None:
+        try:
+            pred_result = _predictor.predict(
+                pid=subject.get("pid"),
+                lat=subject.get("latitude"),
+                lon=subject.get("longitude"),
+                properties_df=_properties_df,
+                boundary_gdf=_boundary_gdf,
+            )
+            if pred_result.market_estimate:
+                market_estimate = pred_result.market_estimate
+        except Exception as exc:
+            logger.warning("SAR prediction failed for CMA: %s", exc)
+
+    # Run CMA
+    from src.cma.cma_engine import CMAEngine
+    cma = CMAEngine(_properties_df)
+
+    try:
+        comparables = cma.find_comparables(
+            subject=subject,
+            max_comps=request.max_comps,
+            max_radius_m=request.max_radius_m,
+            max_age_days=request.max_age_days,
+        )
+    except Exception as exc:
+        logger.error("CMA comparable search failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"CMA failed: {str(exc)}")
+
+    report = cma.generate_cma_report(
+        subject=subject,
+        comparables=comparables,
+        market_estimate=market_estimate,
+        assessed_value=subject.get("total_assessed_value"),
+    )
+
+    # Convert to response schema
+    cma_comps = [CMAComparable(**c) for c in report["comparables"]]
+
+    cma_range = None
+    if report.get("cma_range"):
+        cma_range = CMAPriceRange(**report["cma_range"])
+
+    rec = report.get("recommendation", {})
+    recommendation = CMARecommendation(
+        estimated_value=rec.get("estimated_value"),
+        estimated_range=rec.get("estimated_range"),
+        confidence=rec.get("confidence", "low"),
+        method=rec.get("method"),
+        note=rec.get("note"),
+    )
+
+    return CMAResponse(
+        subject=report["subject"],
+        comparables=cma_comps,
+        comparable_count=report["comparable_count"],
+        cma_estimate=report.get("cma_estimate"),
+        cma_range=cma_range,
+        sar_estimate=report.get("sar_estimate"),
+        assessed_value=report.get("assessed_value"),
+        market_stats=report.get("market_stats"),
+        recommendation=recommendation,
+    )
 
 
 @app.get("/api/health", response_model=HealthResponse)
