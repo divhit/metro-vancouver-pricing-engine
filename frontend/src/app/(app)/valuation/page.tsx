@@ -255,8 +255,11 @@ export default function ValuationPage() {
 
           // Check if this is a strata building with multiple units
           api.getBuildingUnits(parseInt(streetNum), normalizedStreet).then((units) => {
-            if (units.length > 1) {
-              // This is a strata building
+            // Only treat as strata if units are condos/townhomes, NOT duplexes
+            const isStrata = units.length > 2 ||
+              (units.length > 1 && units.some((u) => u.property_type === "condo" || u.property_type === "townhome"));
+            if (isStrata) {
+              // This is a strata building (condo/townhome)
               setIsStrataBuilding(true);
               setBuildingUnits(units);
               setPropertyType("condo");
@@ -280,17 +283,22 @@ export default function ValuationPage() {
                 }
               }
               // If no googleUnit, the UI will prompt the user
-            } else if (units.length === 1) {
-              // Single unit — auto-select
+            } else if (units.length >= 1) {
+              // Not strata: either single property or duplex (2 PIDs, same lot)
+              // For duplexes: pick the newer PID (higher number = actual unit, not old lot)
+              const sorted = [...units].sort((a, b) =>
+                parseInt(b.pid) - parseInt(a.pid)
+              );
+              const best = sorted[0];
               setSelectedMatch({
-                pid: units[0].pid,
+                pid: best.pid,
                 address: `${streetNum} ${normalizedStreet}`,
-                property_type: units[0].property_type,
+                property_type: best.property_type,
                 neighbourhood: "",
-                assessed_value: units[0].assessed_value,
+                assessed_value: best.assessed_value,
               });
-              setPid(units[0].pid);
-              if (units[0].property_type) setPropertyType(units[0].property_type);
+              setPid(best.pid);
+              if (best.property_type) setPropertyType(best.property_type);
             } else {
               // Not a strata building — do normal search
               const searchQuery = `${streetNum} ${normalizedStreet}`;
