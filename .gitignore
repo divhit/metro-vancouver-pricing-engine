@@ -64,3 +64,4 @@ logs/
 # Cache
 .cache/
 redis-data/
+.vercel

@@ -347,23 +347,21 @@ class CMAEngine:
         s_hood = subject.get("neighbourhood_code", "")
         has_coords = sold["latitude"].notna() & sold["longitude"].notna()
 
-        # ── Sub-area geofencing strategy ──
-        # MLS sub_area is the most reliable location for sold listings.
-        # Build a mapping from our neighbourhood codes to MLS sub_areas,
-        # then filter by sub_area for tight geographic matching.
-        # Each step also enforces a max distance cap to catch geocoding errors.
+        # ── Comparable selection criteria ──
+        # A valid comp must meet ALL of:
+        #   1. Same sub-region (MLS sub_area)
+        #   2. Within 2km of subject
+        #   3. Assessed value within ±10% of subject's assessed value
+        #   4. Same property type
+        #   5. Recent sale
         #
-        # 1. Same sub_area(s) + same type + 60 days + max 2km
-        # 2. Same sub_area(s) + same type + 120 days + max 2km
-        # 3. Adjacent sub_areas + same type + 120 days + max 3km
-        # 4. Fallback types in same + adjacent sub_areas + 120 days + max 3km
-        # 5. Last resort: same type city-wide within 3km + 120 days
+        # Progressive widening only relaxes time window and value tolerance,
+        # NEVER the sub-region or distance requirements.
 
         # Map subject neighbourhood to MLS sub_areas
         matched_sold = sold[(sold["neighbourhood_code"] != "") & sold["sub_area"].notna()]
         hood_to_subs = matched_sold.groupby("neighbourhood_code")["sub_area"].apply(set).to_dict()
         subject_subs = hood_to_subs.get(s_hood, set())
-        # Also build adjacent neighbourhood sub_areas
         adjacent_subs = set()
         if s_hood:
             try:
@@ -374,23 +372,13 @@ class CMAEngine:
                 adjacent_subs = subject_subs
 
         candidates = pd.DataFrame()
+        types_to_search = [s_type] if same_type and s_type else []
 
-        def _compute_distances(df: pd.DataFrame) -> pd.DataFrame:
-            if s_lat and s_lon and not df.empty:
-                df = df.copy()
-                df["distance_m"] = df.apply(
-                    lambda r: _haversine(s_lat, s_lon, r["latitude"], r["longitude"]),
-                    axis=1,
-                )
-            else:
-                df = df.copy()
-                df["distance_m"] = 0.0
-            return df
-
-        def _find_by_sub_area(
-            sub_areas: set[str], types: list[str], days: int, max_dist: float,
+        def _search(
+            sub_areas: set[str], types: list[str], days: int,
+            max_dist: float, value_pct: float,
         ) -> pd.DataFrame:
-            """Find candidates in given MLS sub_areas, types, time, and distance."""
+            """Find comps matching sub_area, type, recency, distance, and assessed value."""
             cutoff = datetime.now() - timedelta(days=days)
             m = sold["sold_dt"].notna() & (sold["sold_dt"] >= cutoff)
             m &= has_coords
@@ -398,50 +386,64 @@ class CMAEngine:
                 m &= sold["canonical_type"].isin(types)
             if sub_areas:
                 m &= sold["sub_area"].isin(sub_areas)
-            result = _compute_distances(sold[m])
-            return result[result["distance_m"] <= max_dist]
+            # Assessed value within ±X% of subject
+            if s_assessed and s_assessed > 0 and value_pct > 0:
+                av = sold["assessed_value"]
+                m &= av.notna() & (av >= s_assessed * (1 - value_pct)) & (av <= s_assessed * (1 + value_pct))
+            result = sold[m].copy()
+            if s_lat and s_lon and not result.empty:
+                result["distance_m"] = result.apply(
+                    lambda r: _haversine(s_lat, s_lon, r["latitude"], r["longitude"]),
+                    axis=1,
+                )
+                result = result[result["distance_m"] <= max_dist]
+            else:
+                result["distance_m"] = 0.0
+            return result
 
-        types_to_search = [s_type] if same_type and s_type else []
-
-        # Step 1: Same sub_area(s), same type, 60 days, max 2km
+        # Step 1: Same sub_area, ±10% value, 2km, 60 days
         if subject_subs:
-            candidates = _find_by_sub_area(subject_subs, types_to_search, max_age_days, 2000)
+            candidates = _search(subject_subs, types_to_search, max_age_days, 2000, 0.10)
             if len(candidates) >= 3:
-                logger.info("CMA: %d comps in sub_areas %s within %d days",
-                            len(candidates), subject_subs, max_age_days)
+                logger.info("CMA step 1: %d comps (same sub_area, ±10%%, %dd)",
+                            len(candidates), max_age_days)
 
-        # Step 2: Same sub_area(s), same type, 120 days, max 2km
+        # Step 2: Same sub_area, ±10% value, 2km, 120 days
         if len(candidates) < 3 and subject_subs:
-            candidates = _find_by_sub_area(subject_subs, types_to_search, 120, 2000)
+            candidates = _search(subject_subs, types_to_search, 120, 2000, 0.10)
             if len(candidates) >= 3:
-                logger.info("CMA: %d comps in sub_areas %s within 120 days",
-                            len(candidates), subject_subs)
-
-        # Step 3: Adjacent sub_areas, same type, 120 days, max 3km
-        if len(candidates) < 3 and adjacent_subs:
-            candidates = _find_by_sub_area(adjacent_subs, types_to_search, 120, 3000)
-            if len(candidates) >= 3:
-                logger.info("CMA: %d comps in adjacent sub_areas within 120 days, 3km",
+                logger.info("CMA step 2: %d comps (same sub_area, ±10%%, 120d)",
                             len(candidates))
 
-        # Step 4: Fallback types in same + adjacent sub_areas
+        # Step 3: Adjacent sub_areas, ±10% value, 2km, 120 days
+        if len(candidates) < 3 and adjacent_subs:
+            candidates = _search(adjacent_subs, types_to_search, 120, 2000, 0.10)
+            if len(candidates) >= 3:
+                logger.info("CMA step 3: %d comps (adjacent subs, ±10%%, 120d)",
+                            len(candidates))
+
+        # Step 4: Adjacent sub_areas, ±20% value, 2km, 120 days
+        if len(candidates) < 3 and adjacent_subs:
+            candidates = _search(adjacent_subs, types_to_search, 120, 2000, 0.20)
+            if len(candidates) >= 3:
+                logger.info("CMA step 4: %d comps (adjacent subs, ±20%%, 120d)",
+                            len(candidates))
+
+        # Step 5: Fallback types, adjacent sub_areas, ±20% value, 2km
         if len(candidates) < 3 and same_type and s_type:
             fallbacks = _TYPE_FALLBACKS.get(s_type, [])
             if fallbacks and adjacent_subs:
                 all_types = [s_type] + fallbacks
-                candidates = _find_by_sub_area(adjacent_subs, all_types, 120, 3000)
-                logger.info("CMA: %d comps with fallback types %s in adjacent sub_areas",
-                            len(candidates), all_types)
+                candidates = _search(adjacent_subs, all_types, 120, 2000, 0.20)
+                logger.info("CMA step 5: %d comps (fallback types, ±20%%)",
+                            len(candidates))
 
-        # Step 5: Last resort — same type city-wide within 3km, 120 days
+        # Step 6: Last resort — relax value to ±30%, extend to 180 days
         if len(candidates) < 3:
-            logger.info("CMA: falling back to city-wide search within 3km")
-            cutoff = datetime.now() - timedelta(days=120)
-            m = sold["sold_dt"].notna() & (sold["sold_dt"] >= cutoff) & has_coords
-            if types_to_search:
-                m &= sold["canonical_type"].isin(types_to_search)
-            candidates = _compute_distances(sold[m])
-            candidates = candidates[candidates["distance_m"] <= 3000]
+            logger.info("CMA step 6: last resort (±30%%, 180d, 2km)")
+            candidates = _search(
+                adjacent_subs or subject_subs, types_to_search, 180, 2000, 0.30,
+            )
 
         if candidates.empty:
             return []
