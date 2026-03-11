@@ -954,6 +954,53 @@ async def search_properties(
     return out
 
 
+@app.get("/api/building-units")
+async def get_building_units(
+    street_number: int = Query(..., description="Building street number (to_civic_number)"),
+    street_name: str = Query(..., min_length=2, description="Street name"),
+) -> list[dict]:
+    """List all units in a strata building by street number + street name.
+
+    Returns units sorted by unit number (from_civic_number).
+    """
+    if _properties_df is None or _properties_df.empty:
+        return []
+
+    to_civic = _properties_df["to_civic_number"].fillna(0).astype(int)
+    street_col = _properties_df["street_name"].fillna("").str.upper()
+    civic_col = _properties_df["from_civic_number"].fillna(0).astype(int) if "from_civic_number" in _properties_df.columns else pd.Series(0, index=_properties_df.index)
+    name_upper = street_name.strip().upper()
+
+    # Match building: to_civic = street_number AND street name matches
+    mask = (to_civic == street_number)
+    # Try exact street match first, then word match
+    exact_street = mask & (street_col == name_upper)
+    if exact_street.sum() > 0:
+        mask = exact_street
+    else:
+        words = [w for w in name_upper.split() if len(w) > 1]
+        for w in words:
+            mask = mask & street_col.str.contains(w, na=False)
+
+    if mask.sum() == 0:
+        return []
+
+    units_df = _properties_df[mask].copy()
+    units_df["_unit"] = civic_col[units_df.index]
+    units_df = units_df.sort_values("_unit")
+
+    out = []
+    for _, row in units_df.iterrows():
+        unit_num = int(row["_unit"]) if row["_unit"] > 0 else None
+        out.append({
+            "pid": str(row.get("pid", "")),
+            "unit_number": unit_num,
+            "property_type": str(row.get("property_type", "")),
+            "assessed_value": float(row.get("total_assessed_value", 0)),
+        })
+    return out
+
+
 @app.post("/api/cma", response_model=CMAResponse)
 async def generate_cma(request: CMARequest) -> CMAResponse:
     """Generate a Comparative Market Analysis report.

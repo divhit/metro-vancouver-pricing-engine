@@ -8,6 +8,7 @@ import {
   type CMAResponse,
   type CMAComparable,
   type SearchResult,
+  type BuildingUnit,
 } from "@/lib/api";
 import {
   formatCurrencyFull,
@@ -82,6 +83,13 @@ export default function ValuationPage() {
   // Address disambiguation: when multiple properties match
   const [addressMatches, setAddressMatches] = useState<SearchResult[]>([]);
   const [selectedMatch, setSelectedMatch] = useState<SearchResult | null>(null);
+
+  // Strata building: prompt for unit number
+  const [isStrataBuilding, setIsStrataBuilding] = useState(false);
+  const [buildingUnits, setBuildingUnits] = useState<BuildingUnit[]>([]);
+  const [unitInput, setUnitInput] = useState("");
+  const [unitSuggestions, setUnitSuggestions] = useState<BuildingUnit[]>([]);
+  const [showUnitDropdown, setShowUnitDropdown] = useState(false);
 
   const debouncedPidQuery = useDebounce(pidQuery, 250);
 
@@ -198,22 +206,42 @@ export default function ValuationPage() {
         setLon(coords.lng.toString());
         setSelectedMatch(null);
         setAddressMatches([]);
+        setIsStrataBuilding(false);
+        setBuildingUnits([]);
+        setUnitInput("");
+        setUnitSuggestions([]);
 
         // Extract street number + full street from Google address and search our DB
         // e.g. "312 East 40th Avenue, Vancouver, BC, Canada" → search "312 40TH AVE E"
-        const beforeCity = formattedAddr.replace(/,.*$/, "").trim(); // "312 East 40th Avenue"
-        const streetNum = beforeCity.match(/^(\d+)/)?.[1];
+        const beforeCity = formattedAddr.replace(/,.*$/, "").trim();
+
+        // Extract unit number from Google address (#302, Suite 302, Unit 302)
+        let googleUnit: string | null = null;
+        const unitMatch = beforeCity.match(/#\s*(\d+)/);
+        if (unitMatch) {
+          googleUnit = unitMatch[1];
+        } else {
+          const suiteMatch = beforeCity.match(/\b(?:Suite|Unit|Apt|Ste)\s*(\d+)/i);
+          if (suiteMatch) googleUnit = suiteMatch[1];
+        }
+
+        // Remove unit part from address for street matching
+        let cleanAddr = beforeCity
+          .replace(/#\s*\d+/, "")
+          .replace(/\b(?:Suite|Unit|Apt|Ste)\s*\d+/i, "")
+          .replace(/,\s*$/, "")
+          .trim();
+
+        const streetNum = cleanAddr.match(/^(\d+)/)?.[1];
         if (streetNum) {
           // Normalize: "East 40th Avenue" → "40TH AVE E"
-          let streetPart = beforeCity.replace(/^\d+\s*/, "").trim(); // "East 40th Avenue"
-          // Extract direction if at start or end
+          let streetPart = cleanAddr.replace(/^\d+\s*/, "").trim();
           let dir = "";
           const dirMatch = streetPart.match(/^(East|West|North|South)\b\s*/i);
           if (dirMatch) {
-            dir = dirMatch[1].charAt(0).toUpperCase(); // "E"
+            dir = dirMatch[1].charAt(0).toUpperCase();
             streetPart = streetPart.replace(dirMatch[0], "").trim();
           }
-          // Abbreviate common suffixes
           streetPart = streetPart
             .replace(/\bAvenue\b/i, "AVE")
             .replace(/\bStreet\b/i, "ST")
@@ -223,40 +251,96 @@ export default function ValuationPage() {
             .replace(/\bCrescent\b/i, "CRES")
             .replace(/\bPlace\b/i, "PL")
             .replace(/\bCourt\b/i, "CT");
-          const searchQuery = `${streetNum} ${streetPart}${dir ? " " + dir : ""}`.toUpperCase();
+          const normalizedStreet = `${streetPart}${dir ? " " + dir : ""}`.toUpperCase();
 
-          api.searchProperties(searchQuery, 10).then((matches) => {
-            // Filter to only exact civic number + street matches
-            const exact = matches.filter((m) => {
-              const mAddr = m.address.toUpperCase();
-              return mAddr.startsWith(streetNum + " ") && mAddr.includes(streetPart.split(/\s+/)[0].toUpperCase());
-            });
-            // Further narrow: if direction specified, prefer matches with that direction
-            let filtered = exact;
-            if (dir && exact.length > 1) {
-              const withDir = exact.filter((m) => m.address.toUpperCase().endsWith(" " + dir));
-              if (withDir.length > 0) filtered = withDir;
+          // Check if this is a strata building with multiple units
+          api.getBuildingUnits(parseInt(streetNum), normalizedStreet).then((units) => {
+            if (units.length > 1) {
+              // This is a strata building
+              setIsStrataBuilding(true);
+              setBuildingUnits(units);
+              setPropertyType("condo");
+
+              if (googleUnit) {
+                // Google address had a unit number — auto-select it
+                const match = units.find((u) => u.unit_number === parseInt(googleUnit!));
+                if (match) {
+                  setSelectedMatch({
+                    pid: match.pid,
+                    address: `${googleUnit} ${normalizedStreet}`,
+                    property_type: match.property_type,
+                    neighbourhood: "",
+                    assessed_value: match.assessed_value,
+                  });
+                  setPid(match.pid);
+                  setUnitInput(googleUnit);
+                } else {
+                  // Unit not found in our data — show input
+                  setUnitInput(googleUnit);
+                }
+              }
+              // If no googleUnit, the UI will prompt the user
+            } else if (units.length === 1) {
+              // Single unit — auto-select
+              setSelectedMatch({
+                pid: units[0].pid,
+                address: `${streetNum} ${normalizedStreet}`,
+                property_type: units[0].property_type,
+                neighbourhood: "",
+                assessed_value: units[0].assessed_value,
+              });
+              setPid(units[0].pid);
+              if (units[0].property_type) setPropertyType(units[0].property_type);
+            } else {
+              // Not a strata building — do normal search
+              const searchQuery = `${streetNum} ${normalizedStreet}`;
+              api.searchProperties(searchQuery, 10).then((matches) => {
+                const exact = matches.filter((m) => {
+                  const mAddr = m.address.toUpperCase();
+                  return mAddr.includes(streetPart.split(/\s+/)[0].toUpperCase());
+                });
+                let filtered = exact;
+                if (dir && exact.length > 1) {
+                  const withDir = exact.filter((m) => m.address.toUpperCase().endsWith(" " + dir));
+                  if (withDir.length > 0) filtered = withDir;
+                }
+
+                if (filtered.length > 1) {
+                  setAddressMatches(filtered);
+                } else if (filtered.length === 1) {
+                  setSelectedMatch(filtered[0]);
+                  setPid(filtered[0].pid);
+                  if (filtered[0].property_type) setPropertyType(filtered[0].property_type);
+                  setAddressMatches([]);
+                } else if (exact.length > 0) {
+                  if (exact.length > 1) {
+                    setAddressMatches(exact);
+                  } else {
+                    setSelectedMatch(exact[0]);
+                    setPid(exact[0].pid);
+                    if (exact[0].property_type) setPropertyType(exact[0].property_type);
+                    setAddressMatches([]);
+                  }
+                }
+              }).catch(() => {});
             }
-
-            if (filtered.length > 1) {
-              setAddressMatches(filtered);
-            } else if (filtered.length === 1) {
-              setSelectedMatch(filtered[0]);
-              setPid(filtered[0].pid);
-              if (filtered[0].property_type) setPropertyType(filtered[0].property_type);
-              setAddressMatches([]);
-            } else if (exact.length > 0) {
-              // Fallback to unfiltered exact matches
+          }).catch(() => {
+            // Fallback: normal search if building-units endpoint fails
+            const searchQuery = `${streetNum} ${normalizedStreet}`;
+            api.searchProperties(searchQuery, 10).then((matches) => {
+              const exact = matches.filter((m) => {
+                const mAddr = m.address.toUpperCase();
+                return mAddr.includes(streetPart.split(/\s+/)[0].toUpperCase());
+              });
               if (exact.length > 1) {
                 setAddressMatches(exact);
-              } else {
+              } else if (exact.length === 1) {
                 setSelectedMatch(exact[0]);
                 setPid(exact[0].pid);
                 if (exact[0].property_type) setPropertyType(exact[0].property_type);
-                setAddressMatches([]);
               }
-            }
-          }).catch(() => {});
+            }).catch(() => {});
+          });
         }
       });
 
@@ -308,9 +392,13 @@ export default function ValuationPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setShowPidDropdown(false);
-    // Block submission if disambiguation is needed
+    // Block submission if disambiguation or unit selection is needed
     if (mode === "address" && addressMatches.length > 1 && !selectedMatch) {
       setError("Please select one of the matching properties above before running valuation.");
+      return;
+    }
+    if (mode === "address" && isStrataBuilding && !selectedMatch) {
+      setError("This is a strata building — please enter a unit number above.");
       return;
     }
     runPrediction();
@@ -424,6 +512,78 @@ export default function ValuationPage() {
                       <span className="text-[10px] text-sand-400">{selectedCoords.lat.toFixed(5)}, {selectedCoords.lng.toFixed(5)}</span>
                     </div>
 
+                    {/* Strata building: prompt for unit number */}
+                    {isStrataBuilding && !selectedMatch && (
+                      <div className="p-3 rounded-lg border border-teal-200 bg-teal-50/50">
+                        <p className="text-xs font-medium text-teal-800 mb-2">
+                          This is a strata building with {buildingUnits.length} units — enter your unit number:
+                        </p>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={unitInput}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setUnitInput(val);
+                              if (val.length > 0) {
+                                const num = parseInt(val);
+                                const filtered = buildingUnits.filter((u) =>
+                                  u.unit_number !== null && u.unit_number.toString().startsWith(val)
+                                );
+                                setUnitSuggestions(filtered.slice(0, 10));
+                                setShowUnitDropdown(filtered.length > 0);
+                                // Auto-select if exact match
+                                const exact = buildingUnits.find((u) => u.unit_number === num);
+                                if (exact) {
+                                  setSelectedMatch({
+                                    pid: exact.pid,
+                                    address: `Unit ${exact.unit_number}`,
+                                    property_type: exact.property_type,
+                                    neighbourhood: "",
+                                    assessed_value: exact.assessed_value,
+                                  });
+                                  setPid(exact.pid);
+                                  setShowUnitDropdown(false);
+                                }
+                              } else {
+                                setUnitSuggestions([]);
+                                setShowUnitDropdown(false);
+                              }
+                            }}
+                            placeholder="e.g. 302, 1201..."
+                            autoComplete="off"
+                            className="w-full px-3 py-2 rounded-md border border-teal-300 bg-white text-sand-900 text-sm placeholder:text-sand-300 focus:outline-none focus:border-teal-400 focus:ring-1 focus:ring-teal-200 transition"
+                          />
+                          {showUnitDropdown && unitSuggestions.length > 0 && (
+                            <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-sand-200 rounded-lg shadow-lg overflow-hidden max-h-[200px] overflow-y-auto">
+                              {unitSuggestions.map((u) => (
+                                <button
+                                  key={u.pid}
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedMatch({
+                                      pid: u.pid,
+                                      address: `Unit ${u.unit_number}`,
+                                      property_type: u.property_type,
+                                      neighbourhood: "",
+                                      assessed_value: u.assessed_value,
+                                    });
+                                    setPid(u.pid);
+                                    setUnitInput(String(u.unit_number));
+                                    setShowUnitDropdown(false);
+                                  }}
+                                  className="w-full text-left px-3 py-2 text-xs hover:bg-teal-50 transition flex items-center justify-between border-t border-sand-100 first:border-t-0"
+                                >
+                                  <span className="font-medium">Unit {u.unit_number}</span>
+                                  <span className="text-sand-500">{formatCurrency(u.assessed_value)}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Disambiguation: multiple properties at this address */}
                     {addressMatches.length > 1 && (
                       <div className="p-3 rounded-lg border border-amber-200 bg-amber-50/50">
@@ -470,10 +630,15 @@ export default function ValuationPage() {
                     {/* Show selected property confirmation */}
                     {selectedMatch && addressMatches.length === 0 && (
                       <div className="flex items-center gap-2 text-[11px] text-teal-700">
-                        <span className="font-medium">{selectedMatch.address}</span>
+                        <span className="font-medium">
+                          {isStrataBuilding ? `${selectedAddress?.replace(/,.*$/, "")} — Unit ${unitInput}` : selectedMatch.address}
+                        </span>
                         <span className="px-1.5 py-0.5 rounded bg-teal-50 border border-teal-200 text-[10px] font-medium uppercase">
                           {selectedMatch.property_type}
                         </span>
+                        {selectedMatch.assessed_value > 0 && (
+                          <span className="text-sand-500">{formatCurrency(selectedMatch.assessed_value)}</span>
+                        )}
                         <span className="text-sand-400">PID: {selectedMatch.pid}</span>
                       </div>
                     )}

@@ -125,6 +125,13 @@ export interface SearchResult {
   assessed_value: number;
 }
 
+export interface BuildingUnit {
+  pid: string;
+  unit_number: number | null;
+  property_type: string;
+  assessed_value: number;
+}
+
 export interface TrendPoint {
   year: number;
   median_value: number;
@@ -256,6 +263,11 @@ export const api = {
     ),
 
   getHealth: () => apiFetch<HealthResponse>("/api/health"),
+
+  getBuildingUnits: (streetNumber: number, streetName: string) =>
+    apiFetch<BuildingUnit[]>(
+      `/api/building-units?street_number=${streetNumber}&street_name=${encodeURIComponent(streetName)}`,
+    ),
 
   getCMA: (req: CMARequest) =>
     apiFetch<CMAResponse>("/api/cma", {
