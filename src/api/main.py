@@ -94,6 +94,22 @@ _REDIS_URL = os.environ.get("REDIS_URL", None)
 _MLS_AVAILABLE = os.environ.get("MLS_AVAILABLE", "false").lower() == "true"
 _LITE_MODE = os.environ.get("LITE_MODE", "false").lower() == "true"
 
+# Columns loaded in LITE_MODE (essential for lookups + basic ML features).
+# LightGBM handles missing features as NaN natively.
+_LITE_COLUMNS = [
+    "pid", "full_address", "street_name", "from_civic_number", "to_civic_number",
+    "latitude", "longitude", "property_type", "zoning_district",
+    "neighbourhood_code", "total_assessed_value", "current_land_value",
+    "current_improvement_value", "year_built", "tax_assessment_year",
+    "legal_type", "effective_age", "land_coordinate",
+    # Key ML features
+    "land_to_total_ratio", "log_total_value", "log_land_value",
+    "is_strata", "lot_size_sqft", "estimated_living_area_sqft",
+    "dist_nearest_skytrain_m", "dist_downtown_km",
+    "school_score_1km", "transit_score_1km",
+    "median_neighbourhood_value", "neighbourhood_density",
+]
+
 
 # ============================================================
 # LIFESPAN
@@ -120,7 +136,18 @@ async def lifespan(app: FastAPI):
     enriched_path = Path(_DATA_DIR) / "processed" / "enriched_properties.parquet"
     if enriched_path.exists():
         try:
-            _properties_df = pd.read_parquet(enriched_path)
+            if _LITE_MODE:
+                # Load only essential columns to save memory
+                import pyarrow.parquet as _pq
+                _all_cols = set(_pq.read_schema(enriched_path).names)
+                _load_cols = [c for c in _LITE_COLUMNS if c in _all_cols]
+                _properties_df = pd.read_parquet(enriched_path, columns=_load_cols)
+                logger.info(
+                    "LITE_MODE: loaded %d/%d columns",
+                    len(_load_cols), len(_all_cols),
+                )
+            else:
+                _properties_df = pd.read_parquet(enriched_path)
             # Compute unified civic_number if not already present.
             # BC Assessment stores strata unit numbers in from_civic_number
             # but the actual street address in to_civic_number. We need both
