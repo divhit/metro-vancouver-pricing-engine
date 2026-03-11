@@ -120,29 +120,23 @@ async def lifespan(app: FastAPI):
     enriched_path = Path(_DATA_DIR) / "processed" / "enriched_properties.parquet"
     if enriched_path.exists():
         try:
+            _properties_df = pd.read_parquet(enriched_path)
             if _LITE_MODE:
-                # Read with memory-efficient types via pyarrow
-                import pyarrow.parquet as _pq
-                import pyarrow as _pa
-                table = _pq.read_table(enriched_path)
-                # Downcast float64→float32 in Arrow (before pandas allocation)
-                new_fields = []
-                for field in table.schema:
-                    if field.type == _pa.float64():
-                        new_fields.append(field.with_type(_pa.float32()))
-                    else:
-                        new_fields.append(field)
-                table = table.cast(_pa.schema(new_fields))
-                _properties_df = table.to_pandas()
-                del table
-                # Convert low-cardinality string columns to categories
+                # Optimize memory: downcast floats, convert strings to categoricals
+                import gc
+                for col in _properties_df.select_dtypes(include=["float64"]).columns:
+                    _properties_df[col] = pd.to_numeric(
+                        _properties_df[col], downcast="float"
+                    )
                 for col in _properties_df.select_dtypes(include=["object"]).columns:
-                    if _properties_df[col].nunique() < len(_properties_df) * 0.5:
-                        _properties_df[col] = _properties_df[col].astype("category")
+                    try:
+                        if _properties_df[col].nunique() < len(_properties_df) * 0.5:
+                            _properties_df[col] = _properties_df[col].astype("category")
+                    except Exception:
+                        pass
+                gc.collect()
                 _mem = _properties_df.memory_usage(deep=True).sum() / 1024 / 1024
-                logger.info("LITE_MODE: DataFrame loaded at %.1f MB", _mem)
-            else:
-                _properties_df = pd.read_parquet(enriched_path)
+                logger.info("LITE_MODE: DataFrame memory %.1f MB", _mem)
             # Compute unified civic_number if not already present.
             # BC Assessment stores strata unit numbers in from_civic_number
             # but the actual street address in to_civic_number. We need both
