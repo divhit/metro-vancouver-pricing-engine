@@ -92,6 +92,7 @@ _MODEL_DIR = os.environ.get("MODEL_DIR", "models")
 _DATA_DIR = os.environ.get("DATA_DIR", "data")
 _REDIS_URL = os.environ.get("REDIS_URL", None)
 _MLS_AVAILABLE = os.environ.get("MLS_AVAILABLE", "false").lower() == "true"
+_LITE_MODE = os.environ.get("LITE_MODE", "false").lower() == "true"
 
 
 # ============================================================
@@ -257,7 +258,7 @@ async def lifespan(app: FastAPI):
             # ----------------------------------------------------------
             still_missing = _properties_df["year_built"].isna()
             n_still_missing = still_missing.sum()
-            if n_still_missing > 0:
+            if n_still_missing > 0 and not _LITE_MODE:
                 try:
                     import requests as _requests
 
@@ -411,30 +412,34 @@ async def lifespan(app: FastAPI):
     # neighbourhood codes from the training data pipeline.
     # ----------------------------------------------------------
     global _boundary_gdf
-    try:
-        import geopandas as _gpd
-
-        boundary_url = (
-            "https://opendata.vancouver.ca/api/explore/v2.1/"
-            "catalog/datasets/local-area-boundary/exports/geojson"
-        )
-        _boundary_gdf = _gpd.read_file(boundary_url)
-        # Ensure CRS is WGS84 (EPSG:4326) for lat/lon queries
-        if _boundary_gdf.crs is None or _boundary_gdf.crs.to_epsg() != 4326:
-            _boundary_gdf = _boundary_gdf.to_crs(epsg=4326)
-
-        logger.info(
-            "Loaded local area boundaries: %d polygons (columns: %s)",
-            len(_boundary_gdf),
-            list(_boundary_gdf.columns),
-        )
-    except Exception as boundary_exc:
-        logger.warning(
-            "Failed to load local area boundaries: %s — "
-            "will fall back to BC Assessment neighbourhood codes",
-            boundary_exc,
-        )
+    if _LITE_MODE:
+        logger.info("LITE_MODE: skipping boundary GeoJSON download")
         _boundary_gdf = None
+    else:
+        try:
+            import geopandas as _gpd
+
+            boundary_url = (
+                "https://opendata.vancouver.ca/api/explore/v2.1/"
+                "catalog/datasets/local-area-boundary/exports/geojson"
+            )
+            _boundary_gdf = _gpd.read_file(boundary_url)
+            # Ensure CRS is WGS84 (EPSG:4326) for lat/lon queries
+            if _boundary_gdf.crs is None or _boundary_gdf.crs.to_epsg() != 4326:
+                _boundary_gdf = _boundary_gdf.to_crs(epsg=4326)
+
+            logger.info(
+                "Loaded local area boundaries: %d polygons (columns: %s)",
+                len(_boundary_gdf),
+                list(_boundary_gdf.columns),
+            )
+        except Exception as boundary_exc:
+            logger.warning(
+                "Failed to load local area boundaries: %s — "
+                "will fall back to BC Assessment neighbourhood codes",
+                boundary_exc,
+            )
+            _boundary_gdf = None
 
     # ----------------------------------------------------------
     # Pre-compute multi-year trends from raw property tax CSV.

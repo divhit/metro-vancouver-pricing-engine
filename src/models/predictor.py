@@ -12,6 +12,7 @@ Orchestrates the full prediction pipeline:
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +20,11 @@ from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
-import shap
+
+try:
+    import shap
+except ImportError:
+    shap = None  # type: ignore[assignment]
 
 from src.adjustments.adjustment_engine import AdjustmentEngine
 from src.comparables.comparable_engine import ComparableEngine
@@ -94,7 +99,10 @@ class PropertyPredictor:
         self._model_trainer: Optional[ModelTrainer] = None
 
         # In-memory model cache: segment_key -> (model, metadata)
+        # Limited to _MAX_CACHED_MODELS to keep memory bounded.
         self._model_cache: dict[str, tuple[Any, dict]] = {}
+        self._model_cache_order: list[str] = []  # LRU order
+        self._MAX_CACHED_MODELS = int(os.environ.get("MAX_CACHED_MODELS", "5"))
         # Quantile model cache: segment_key -> dict[float, model]
         self._quantile_cache: dict[str, dict[float, Any]] = {}
         # Market model cache: property_type -> (model, metadata)
@@ -965,6 +973,10 @@ class PropertyPredictor:
             # Check cache first
             if current_key in self._model_cache:
                 model, _ = self._model_cache[current_key]
+                # Move to end of LRU order
+                if current_key in self._model_cache_order:
+                    self._model_cache_order.remove(current_key)
+                    self._model_cache_order.append(current_key)
                 logger.info(
                     "Model cache hit for segment '%s' (requested '%s')",
                     current_key,
@@ -975,7 +987,14 @@ class PropertyPredictor:
             # Try loading from disk
             try:
                 model, metadata = self.model_trainer.load_model(current_key)
+                # LRU eviction: remove oldest model if cache is full
+                if len(self._model_cache) >= self._MAX_CACHED_MODELS and self._model_cache_order:
+                    evict_key = self._model_cache_order.pop(0)
+                    self._model_cache.pop(evict_key, None)
+                    self._quantile_cache.pop(evict_key, None)
+                    logger.info("Evicted model '%s' from cache (LRU)", evict_key)
                 self._model_cache[current_key] = (model, metadata)
+                self._model_cache_order.append(current_key)
                 logger.info(
                     "Loaded model for segment '%s' from disk (requested '%s')",
                     current_key,
@@ -1120,6 +1139,9 @@ class PropertyPredictor:
                     features_df[col] = features_df[col].astype(float)
 
             # Use numpy array to fully bypass pandas categorical validation
+            if shap is None:
+                logger.debug("SHAP not installed, skipping explanations")
+                return {}
             explainer = shap.TreeExplainer(model)
             shap_values = explainer.shap_values(features_df.values)
 

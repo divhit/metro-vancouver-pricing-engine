@@ -17,11 +17,20 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-import geopandas as gpd
 import numpy as np
 import pandas as pd
-import requests
-from shapely.geometry import box
+
+try:
+    import geopandas as gpd
+    from shapely.geometry import box
+except ImportError:
+    gpd = None  # type: ignore[assignment]
+    box = None  # type: ignore[assignment,misc]
+
+try:
+    import requests
+except ImportError:
+    requests = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 

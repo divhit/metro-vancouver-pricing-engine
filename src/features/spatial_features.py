@@ -17,10 +17,15 @@ import time
 from pathlib import Path
 from typing import Optional
 
-import geopandas as gpd
 import numpy as np
 import pandas as pd
-from shapely.geometry import Point
+
+try:
+    import geopandas as gpd
+    from shapely.geometry import Point
+except ImportError:
+    gpd = None  # type: ignore[assignment]
+    Point = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 

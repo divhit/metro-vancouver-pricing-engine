@@ -21,10 +21,18 @@ from typing import Any, Optional
 import joblib
 import lightgbm as lgb
 import numpy as np
-import optuna
 import pandas as pd
-import shap
 from sklearn.model_selection import KFold
+
+try:
+    import optuna
+except ImportError:
+    optuna = None  # type: ignore[assignment]
+
+try:
+    import shap
+except ImportError:
+    shap = None  # type: ignore[assignment]
 
 from src.features.feature_builder import FeatureBuilder
 from src.features.feature_registry import PropertyType

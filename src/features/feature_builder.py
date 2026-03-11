@@ -25,8 +25,12 @@ from src.features.feature_registry import (
     get_features_by_phase,
     get_features_by_property_type,
 )
-from src.features.spatial_features import SpatialFeatureComputer
-from src.features.building_footprint import BuildingFootprintEstimator
+try:
+    from src.features.spatial_features import SpatialFeatureComputer
+    from src.features.building_footprint import BuildingFootprintEstimator
+except ImportError:
+    SpatialFeatureComputer = None  # type: ignore[assignment,misc]
+    BuildingFootprintEstimator = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 

@@ -19,6 +19,9 @@ RUN curl -L -o /tmp/data-api.tar.gz https://github.com/divhit/metro-vancouver-pr
     && tar xzf /tmp/data-api.tar.gz -C /app/ \
     && rm /tmp/data-api.tar.gz
 
+ENV LITE_MODE=true
+ENV MAX_CACHED_MODELS=3
+
 EXPOSE 8000
 
 CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
