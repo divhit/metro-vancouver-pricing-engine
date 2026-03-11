@@ -123,11 +123,104 @@ class CMAEngine:
                      len(sold), sold["latitude"].notna().sum())
         return self._sold_with_coords
 
-    def _geocode_sold(self, sold: pd.DataFrame) -> pd.DataFrame:
-        """Match sold listings to enriched properties for lat/lon."""
+    @staticmethod
+    def _normalize_mls_address(addr: str) -> tuple[int, str]:
+        """Normalize an MLS address to (civic_number, street_name) matching BC Assessment format.
+
+        MLS examples → BC Assessment format:
+          "1 3090 VANNESS AVENUE"  → (3090, "VANNESS AVE")       # unit prefix stripped
+          "1577 E 58TH AVENUE"    → (1577, "58TH AVE E")         # direction moved to end
+          "323 N KAMLOOPS STREET" → (323, "KAMLOOPS ST")          # N stripped (BC has no N/S for streets)
+          "2103 E 33RD AVENUE"    → (2103, "33RD AVE E")
+          "8271 LAUREL STREET"    → (8271, "LAUREL ST")
+        """
         import re
 
-        # Build lookup from enriched properties: (civic_number, street_name_upper) -> (lat, lon, assessed_value)
+        addr_upper = addr.upper().strip()
+
+        # Step 1: Extract unit prefix if present
+        # Condo: "601 1850 COMOX STREET" → unit=601, civic=1850, street="COMOX STREET"
+        # Duplex: "1 3090 VANNESS AVENUE" → unit=1, civic=3090, street="VANNESS AVENUE"
+        # Pattern: first_num second_num street_name — first is unit, second is civic
+        m = re.match(r"^(\d+)\s+(\d+)\s+(.+)", addr_upper)
+        if m:
+            civic_num = int(m.group(2))
+            street_part = m.group(3).strip()
+        else:
+            m = re.match(r"^(\d+)\s+(.+)", addr_upper)
+            if not m:
+                return 0, ""
+            civic_num = int(m.group(1))
+            street_part = m.group(2).strip()
+
+        # Step 2: Extract direction (E/W/N/S) from multiple positions
+        # "E 58TH AVENUE" → dir="E", street="58TH AVENUE"
+        # "13TH E AVENUE" → dir="E", street="13TH AVENUE"
+        # "58TH AVENUE E" → dir="E", street="58TH AVENUE"
+        direction = ""
+
+        # Direction at start: "E 58TH AVENUE"
+        dir_match = re.match(r"^(E|W|N|S|EAST|WEST|NORTH|SOUTH)\s+", street_part)
+        if dir_match:
+            direction = dir_match.group(1)[0]
+            street_part = street_part[dir_match.end():].strip()
+
+        # Direction at end: "58TH AVENUE E"
+        end_dir = re.search(r"\s+(E|W|N|S|EAST|WEST|NORTH|SOUTH)$", street_part)
+        if end_dir:
+            direction = end_dir.group(1)[0]
+            street_part = street_part[:end_dir.start()].strip()
+
+        # Direction embedded between ordinal and suffix: "13TH E AVENUE"
+        mid_dir = re.match(r"^(\d+\w*)\s+(E|W|N|S)\s+(.+)$", street_part)
+        if mid_dir:
+            direction = mid_dir.group(2)[0]
+            street_part = f"{mid_dir.group(1)} {mid_dir.group(3)}"
+
+        # Step 3: Abbreviate suffixes to match BC Assessment format
+        suffix_map = {
+            "AVENUE": "AVE", "STREET": "ST", "DRIVE": "DR", "ROAD": "RD",
+            "BOULEVARD": "BLVD", "CRESCENT": "CRES", "PLACE": "PL",
+            "COURT": "CT", "LANE": "LANE", "WAY": "WAY",
+        }
+        for long_form, short_form in suffix_map.items():
+            street_part = re.sub(rf"\b{long_form}\b", short_form, street_part)
+
+        # Step 4: Add ordinal suffix to bare numbers — "44 AVE" → "44TH AVE"
+        # BC Assessment always uses ordinals: 1ST, 2ND, 3RD, 4TH, etc.
+        bare_num = re.match(r"^(\d+)\s+(AVE|ST|DR|RD|BLVD|CRES|PL|CT)", street_part)
+        if bare_num:
+            num = int(bare_num.group(1))
+            if num % 100 in (11, 12, 13):
+                suffix = "TH"
+            elif num % 10 == 1:
+                suffix = "ST"
+            elif num % 10 == 2:
+                suffix = "ND"
+            elif num % 10 == 3:
+                suffix = "RD"
+            else:
+                suffix = "TH"
+            street_part = f"{num}{suffix}{street_part[bare_num.end(1):]}"
+
+        # Step 5: Append direction at end (BC Assessment format: "58TH AVE E")
+        # Skip N/S for non-numbered streets (BC Assessment typically doesn't use N/S)
+        if direction in ("E", "W"):
+            street_part = f"{street_part} {direction}"
+        elif direction in ("N", "S"):
+            # Only append for numbered streets (e.g. "1ST AVE N"), skip for named streets
+            if re.match(r"^\d", street_part):
+                street_part = f"{street_part} {direction}"
+
+        return civic_num, street_part
+
+    def _geocode_sold(self, sold: pd.DataFrame) -> pd.DataFrame:
+        """Match sold listings to enriched properties for lat/lon and neighbourhood."""
+        import re
+
+        # Build lookup from enriched properties:
+        # (civic_number, street_name_upper) -> (lat, lon, assessed_value, neighbourhood_code)
+        # Also index by to_civic_number for duplex units
         props = self.properties_df
         if "civic_number" not in props.columns:
             return sold
@@ -136,65 +229,72 @@ class CMAEngine:
         has_coords = props["latitude"].notna() & props["longitude"].notna()
         subset = props[has_coords].copy()
         civic = subset["civic_number"].fillna(0).astype(int)
+        to_civic = subset["to_civic_number"].fillna(0).astype(int) if "to_civic_number" in subset.columns else civic
         street = subset["street_name"].fillna("").str.upper().str.strip()
         lats = subset["latitude"].values
         lons = subset["longitude"].values
         assessed = subset["total_assessed_value"].values
+        hoods = subset["neighbourhood_code"].fillna("").values if "neighbourhood_code" in subset.columns else [""] * len(subset)
 
         for i in range(len(subset)):
-            c = int(civic.iloc[i])
             s = street.iloc[i]
-            if c > 0 and s:
+            if not s:
+                continue
+            val = (float(lats[i]), float(lons[i]), float(assessed[i]), str(hoods[i]))
+            c = int(civic.iloc[i])
+            tc = int(to_civic.iloc[i])
+            if c > 0:
                 key = (c, s)
                 if key not in lookup:
-                    lookup[key] = (float(lats[i]), float(lons[i]), float(assessed[i]))
+                    lookup[key] = val
+            # Also index by to_civic for duplex street addresses
+            if tc > 0 and tc != c:
+                key = (tc, s)
+                if key not in lookup:
+                    lookup[key] = val
 
-        # Parse MLS addresses and match
+        # Parse and normalize MLS addresses, then match
         latitudes = []
         longitudes = []
         assessed_values = []
+        hood_codes = []
 
         for _, row in sold.iterrows():
             addr = str(row.get("address", ""))
-            lat, lon, av = None, None, None
+            lat, lon, av, hood = None, None, None, ""
 
             if addr:
-                # Parse "1234 MAIN ST" or "302 5TH AVE W" etc
-                addr_upper = addr.upper().strip()
-                m = re.match(r"^(\d+)\s+(.+)", addr_upper)
-                if m:
-                    civic_num = int(m.group(1))
-                    street_part = m.group(2).strip()
-                    # Remove unit/suite prefixes
-                    street_part = re.sub(r"^(UNIT|SUITE|APT|#)\s*\S+\s*", "", street_part)
-
-                    # Try exact match
-                    if (civic_num, street_part) in lookup:
-                        lat, lon, av = lookup[(civic_num, street_part)]
+                civic_num, street_norm = self._normalize_mls_address(addr)
+                if civic_num > 0 and street_norm:
+                    # Try normalized match
+                    if (civic_num, street_norm) in lookup:
+                        lat, lon, av, hood = lookup[(civic_num, street_norm)]
                     else:
-                        # Try common abbreviation variants
-                        for suffix_map in [
-                            ("STREET", "ST"), ("ST", "STREET"),
-                            ("AVENUE", "AVE"), ("AVE", "AVENUE"),
-                            ("DRIVE", "DR"), ("DR", "DRIVE"),
-                            ("ROAD", "RD"), ("RD", "ROAD"),
-                            ("BOULEVARD", "BLVD"), ("BLVD", "BOULEVARD"),
-                            ("CRESCENT", "CRES"), ("CRES", "CRESCENT"),
-                            ("PLACE", "PL"), ("PL", "PLACE"),
-                            ("COURT", "CT"), ("CT", "COURT"),
-                        ]:
-                            variant = street_part.replace(suffix_map[0], suffix_map[1])
-                            if variant != street_part and (civic_num, variant) in lookup:
-                                lat, lon, av = lookup[(civic_num, variant)]
-                                break
+                        # Try without direction suffix
+                        base = re.sub(r"\s+[EWNS]$", "", street_norm)
+                        if base != street_norm and (civic_num, base) in lookup:
+                            lat, lon, av, hood = lookup[(civic_num, base)]
+                        else:
+                            # Try with opposite abbreviation (AVE↔AVENUE shouldn't
+                            # happen after normalization, but handle ST.↔ST etc.)
+                            for alt_suffix in [
+                                ("ST", "STREET"), ("STREET", "ST"),
+                                ("AVE", "AVENUE"), ("AVENUE", "AVE"),
+                            ]:
+                                variant = street_norm.replace(alt_suffix[0], alt_suffix[1])
+                                if variant != street_norm and (civic_num, variant) in lookup:
+                                    lat, lon, av, hood = lookup[(civic_num, variant)]
+                                    break
 
             latitudes.append(lat)
             longitudes.append(lon)
             assessed_values.append(av)
+            hood_codes.append(hood)
 
         sold["latitude"] = latitudes
         sold["longitude"] = longitudes
         sold["assessed_value"] = assessed_values
+        sold["neighbourhood_code"] = hood_codes
 
         return sold
 
@@ -244,76 +344,93 @@ class CMAEngine:
         s_baths = subject.get("bathrooms")
         s_assessed = subject.get("total_assessed_value", 0)
 
-        # Filter by recency
-        cutoff_date = datetime.now() - timedelta(days=max_age_days)
-        mask = sold["sold_dt"].notna() & (sold["sold_dt"] >= cutoff_date)
-
-        # Filter by type
-        if same_type and s_type:
-            mask &= sold["canonical_type"] == s_type
-
-        # Filter by geography (need coordinates)
+        s_hood = subject.get("neighbourhood_code", "")
         has_coords = sold["latitude"].notna() & sold["longitude"].notna()
-        mask &= has_coords
 
-        candidates = sold[mask].copy()
+        # ── Neighbourhood-first search strategy ──
+        # 1. Same neighbourhood + same type + recent (60 days)
+        # 2. Same neighbourhood + same type + wider time (120 days)
+        # 3. Adjacent neighbourhoods + same type + 120 days
+        # 4. Fallback property types (duplex → detached) + same neighbourhood
+        # Each level computes distances but does NOT filter by radius —
+        # neighbourhood boundary IS the geofence.
 
-        if candidates.empty:
-            return []
+        candidates = pd.DataFrame()
 
-        # Compute distances first, then widen search if too few within radius
-        if s_lat and s_lon:
-            candidates["distance_m"] = candidates.apply(
-                lambda r: _haversine(s_lat, s_lon, r["latitude"], r["longitude"]),
-                axis=1,
-            )
-            candidates = candidates[candidates["distance_m"] <= max_radius_m]
-        else:
-            # No coordinates — filter by sub_area match
-            s_sub = subject.get("sub_area", subject.get("neighbourhood_code", ""))
-            if s_sub:
-                candidates = candidates[candidates["sub_area"] == s_sub]
-            candidates["distance_m"] = 0.0
-
-        # Widen search progressively if too few comps after distance filter
-        if len(candidates) < 3:
-            logger.info("Only %d candidates within %dm in %d days — widening to 120 days, 5km",
-                        len(candidates), max_radius_m, max_age_days)
-            cutoff_date = datetime.now() - timedelta(days=120)
-            mask = sold["sold_dt"].notna() & (sold["sold_dt"] >= cutoff_date)
-            if same_type and s_type:
-                mask &= sold["canonical_type"] == s_type
-            mask &= has_coords
-            wider = sold[mask].copy()
-            if s_lat and s_lon and not wider.empty:
-                wider["distance_m"] = wider.apply(
+        def _compute_distances(df: pd.DataFrame) -> pd.DataFrame:
+            if s_lat and s_lon and not df.empty:
+                df = df.copy()
+                df["distance_m"] = df.apply(
                     lambda r: _haversine(s_lat, s_lon, r["latitude"], r["longitude"]),
                     axis=1,
                 )
-                wider = wider[wider["distance_m"] <= 5000]
-            candidates = wider
-            max_radius_m = 5000
+            else:
+                df = df.copy()
+                df["distance_m"] = 0.0
+            return df
 
-        # If still too few, try fallback property types (e.g. duplex → detached)
+        def _find_in_hoods(hoods: list[str], types: list[str], days: int) -> pd.DataFrame:
+            """Find candidates in given neighbourhoods, types, and time window."""
+            cutoff = datetime.now() - timedelta(days=days)
+            m = sold["sold_dt"].notna() & (sold["sold_dt"] >= cutoff)
+            m &= has_coords
+            if types:
+                m &= sold["canonical_type"].isin(types)
+            if hoods:
+                m &= sold["neighbourhood_code"].isin(hoods)
+            return _compute_distances(sold[m])
+
+        types_to_search = [s_type] if same_type and s_type else []
+
+        # Step 1: Same neighbourhood, same type, 60 days
+        if s_hood:
+            candidates = _find_in_hoods([s_hood], types_to_search, max_age_days)
+            if len(candidates) >= 3:
+                logger.info("CMA: %d comps in neighbourhood %s within %d days",
+                            len(candidates), s_hood, max_age_days)
+
+        # Step 2: Same neighbourhood, same type, 120 days
+        if len(candidates) < 3 and s_hood:
+            candidates = _find_in_hoods([s_hood], types_to_search, 120)
+            if len(candidates) >= 3:
+                logger.info("CMA: %d comps in neighbourhood %s within 120 days",
+                            len(candidates), s_hood)
+
+        # Step 3: Adjacent neighbourhoods (±2 codes), same type, 120 days
+        if len(candidates) < 3 and s_hood:
+            try:
+                hood_int = int(s_hood)
+                adjacent = [str(h) for h in range(max(1, hood_int - 2), hood_int + 3)]
+            except ValueError:
+                adjacent = [s_hood]
+            candidates = _find_in_hoods(adjacent, types_to_search, 120)
+            if len(candidates) >= 3:
+                logger.info("CMA: %d comps in adjacent neighbourhoods %s within 120 days",
+                            len(candidates), adjacent)
+
+        # Step 4: Fallback property types within same + adjacent neighbourhoods
         if len(candidates) < 3 and same_type and s_type:
             fallbacks = _TYPE_FALLBACKS.get(s_type, [])
             if fallbacks:
-                logger.info("Only %d %s candidates — adding fallback types: %s",
-                            len(candidates), s_type, fallbacks)
-                allowed_types = [s_type] + fallbacks
-                cutoff_date = datetime.now() - timedelta(days=120)
-                mask = sold["sold_dt"].notna() & (sold["sold_dt"] >= cutoff_date)
-                mask &= sold["canonical_type"].isin(allowed_types)
-                mask &= has_coords
-                wider = sold[mask].copy()
-                if s_lat and s_lon and not wider.empty:
-                    wider["distance_m"] = wider.apply(
-                        lambda r: _haversine(s_lat, s_lon, r["latitude"], r["longitude"]),
-                        axis=1,
-                    )
-                    wider = wider[wider["distance_m"] <= 5000]
-                candidates = wider
-                max_radius_m = 5000
+                all_types = [s_type] + fallbacks
+                try:
+                    hood_int = int(s_hood)
+                    adjacent = [str(h) for h in range(max(1, hood_int - 2), hood_int + 3)]
+                except ValueError:
+                    adjacent = [s_hood] if s_hood else []
+                candidates = _find_in_hoods(adjacent, all_types, 120)
+                logger.info("CMA: %d comps with fallback types %s in hoods %s",
+                            len(candidates), all_types, adjacent)
+
+        # Step 5: Last resort — same type city-wide within 5km, 120 days
+        if len(candidates) < 3:
+            logger.info("CMA: falling back to city-wide search within 5km")
+            cutoff = datetime.now() - timedelta(days=120)
+            m = sold["sold_dt"].notna() & (sold["sold_dt"] >= cutoff) & has_coords
+            if types_to_search:
+                m &= sold["canonical_type"].isin(types_to_search)
+            candidates = _compute_distances(sold[m])
+            candidates = candidates[candidates["distance_m"] <= 5000]
 
         if candidates.empty:
             return []
