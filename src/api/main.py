@@ -121,22 +121,6 @@ async def lifespan(app: FastAPI):
     if enriched_path.exists():
         try:
             _properties_df = pd.read_parquet(enriched_path)
-            if _LITE_MODE:
-                # Optimize memory: downcast floats, convert strings to categoricals
-                import gc
-                for col in _properties_df.select_dtypes(include=["float64"]).columns:
-                    _properties_df[col] = pd.to_numeric(
-                        _properties_df[col], downcast="float"
-                    )
-                for col in _properties_df.select_dtypes(include=["object"]).columns:
-                    try:
-                        if _properties_df[col].nunique() < len(_properties_df) * 0.5:
-                            _properties_df[col] = _properties_df[col].astype("category")
-                    except Exception:
-                        pass
-                gc.collect()
-                _mem = _properties_df.memory_usage(deep=True).sum() / 1024 / 1024
-                logger.info("LITE_MODE: DataFrame memory %.1f MB", _mem)
             # Compute unified civic_number if not already present.
             # BC Assessment stores strata unit numbers in from_civic_number
             # but the actual street address in to_civic_number. We need both
