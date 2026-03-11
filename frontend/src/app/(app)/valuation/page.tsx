@@ -112,11 +112,18 @@ export default function ValuationPage() {
         // PID was set by single-match auto-select
         req.pid = pid;
       } else {
+        // Fallback: use coordinates + address from Google Places
         if (selectedCoords) {
           req.latitude = selectedCoords.lat;
           req.longitude = selectedCoords.lng;
         }
         if (address) req.address = address;
+      }
+      // Always include address/coords as context even when PID is set
+      if (!req.pid && !req.address && !req.latitude) {
+        // Nothing resolved — use whatever we have from the input
+        const inputVal = addressInputRef.current?.value || "";
+        if (inputVal) req.address = inputVal;
       }
     } else if (mode === "coordinates" && lat && lon) {
       req.latitude = parseFloat(lat);
@@ -507,6 +514,7 @@ export default function ValuationPage() {
                     type="text"
                     placeholder="Start typing an address... e.g. 6149 Fremlin Street"
                     autoComplete="off"
+                    onChange={(e) => setAddress(e.target.value)}
                     className="google-pac-input w-full pl-10 pr-4 py-2.5 rounded-lg border border-sand-200 bg-white text-sand-900 text-sm placeholder:text-sand-300 focus:outline-none focus:border-teal-400 focus:ring-1 focus:ring-teal-200 transition"
                   />
                 </div>
