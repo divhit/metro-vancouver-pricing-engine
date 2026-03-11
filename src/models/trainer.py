@@ -42,7 +42,8 @@ from src.models.types import TrainingResult
 logger = logging.getLogger(__name__)
 
 # Suppress Optuna's verbose trial logging
-optuna.logging.set_verbosity(optuna.logging.WARNING)
+if optuna is not None:
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
 class ModelTrainer:
