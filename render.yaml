@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: aparna-property-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard
+    region: oregon
+    autoDeploy: false
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
