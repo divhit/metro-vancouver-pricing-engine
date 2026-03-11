@@ -347,13 +347,31 @@ class CMAEngine:
         s_hood = subject.get("neighbourhood_code", "")
         has_coords = sold["latitude"].notna() & sold["longitude"].notna()
 
-        # ── Neighbourhood-first search strategy ──
-        # 1. Same neighbourhood + same type + recent (60 days)
-        # 2. Same neighbourhood + same type + wider time (120 days)
-        # 3. Adjacent neighbourhoods + same type + 120 days
-        # 4. Fallback property types (duplex → detached) + same neighbourhood
-        # Each level computes distances but does NOT filter by radius —
-        # neighbourhood boundary IS the geofence.
+        # ── Sub-area geofencing strategy ──
+        # MLS sub_area is the most reliable location for sold listings.
+        # Build a mapping from our neighbourhood codes to MLS sub_areas,
+        # then filter by sub_area for tight geographic matching.
+        # Each step also enforces a max distance cap to catch geocoding errors.
+        #
+        # 1. Same sub_area(s) + same type + 60 days + max 2km
+        # 2. Same sub_area(s) + same type + 120 days + max 2km
+        # 3. Adjacent sub_areas + same type + 120 days + max 3km
+        # 4. Fallback types in same + adjacent sub_areas + 120 days + max 3km
+        # 5. Last resort: same type city-wide within 3km + 120 days
+
+        # Map subject neighbourhood to MLS sub_areas
+        matched_sold = sold[(sold["neighbourhood_code"] != "") & sold["sub_area"].notna()]
+        hood_to_subs = matched_sold.groupby("neighbourhood_code")["sub_area"].apply(set).to_dict()
+        subject_subs = hood_to_subs.get(s_hood, set())
+        # Also build adjacent neighbourhood sub_areas
+        adjacent_subs = set()
+        if s_hood:
+            try:
+                hood_int = int(s_hood)
+                for h in range(max(1, hood_int - 2), hood_int + 3):
+                    adjacent_subs.update(hood_to_subs.get(str(h), set()))
+            except ValueError:
+                adjacent_subs = subject_subs
 
         candidates = pd.DataFrame()
 
@@ -369,68 +387,61 @@ class CMAEngine:
                 df["distance_m"] = 0.0
             return df
 
-        def _find_in_hoods(hoods: list[str], types: list[str], days: int) -> pd.DataFrame:
-            """Find candidates in given neighbourhoods, types, and time window."""
+        def _find_by_sub_area(
+            sub_areas: set[str], types: list[str], days: int, max_dist: float,
+        ) -> pd.DataFrame:
+            """Find candidates in given MLS sub_areas, types, time, and distance."""
             cutoff = datetime.now() - timedelta(days=days)
             m = sold["sold_dt"].notna() & (sold["sold_dt"] >= cutoff)
             m &= has_coords
             if types:
                 m &= sold["canonical_type"].isin(types)
-            if hoods:
-                m &= sold["neighbourhood_code"].isin(hoods)
-            return _compute_distances(sold[m])
+            if sub_areas:
+                m &= sold["sub_area"].isin(sub_areas)
+            result = _compute_distances(sold[m])
+            return result[result["distance_m"] <= max_dist]
 
         types_to_search = [s_type] if same_type and s_type else []
 
-        # Step 1: Same neighbourhood, same type, 60 days
-        if s_hood:
-            candidates = _find_in_hoods([s_hood], types_to_search, max_age_days)
+        # Step 1: Same sub_area(s), same type, 60 days, max 2km
+        if subject_subs:
+            candidates = _find_by_sub_area(subject_subs, types_to_search, max_age_days, 2000)
             if len(candidates) >= 3:
-                logger.info("CMA: %d comps in neighbourhood %s within %d days",
-                            len(candidates), s_hood, max_age_days)
+                logger.info("CMA: %d comps in sub_areas %s within %d days",
+                            len(candidates), subject_subs, max_age_days)
 
-        # Step 2: Same neighbourhood, same type, 120 days
-        if len(candidates) < 3 and s_hood:
-            candidates = _find_in_hoods([s_hood], types_to_search, 120)
+        # Step 2: Same sub_area(s), same type, 120 days, max 2km
+        if len(candidates) < 3 and subject_subs:
+            candidates = _find_by_sub_area(subject_subs, types_to_search, 120, 2000)
             if len(candidates) >= 3:
-                logger.info("CMA: %d comps in neighbourhood %s within 120 days",
-                            len(candidates), s_hood)
+                logger.info("CMA: %d comps in sub_areas %s within 120 days",
+                            len(candidates), subject_subs)
 
-        # Step 3: Adjacent neighbourhoods (±2 codes), same type, 120 days
-        if len(candidates) < 3 and s_hood:
-            try:
-                hood_int = int(s_hood)
-                adjacent = [str(h) for h in range(max(1, hood_int - 2), hood_int + 3)]
-            except ValueError:
-                adjacent = [s_hood]
-            candidates = _find_in_hoods(adjacent, types_to_search, 120)
+        # Step 3: Adjacent sub_areas, same type, 120 days, max 3km
+        if len(candidates) < 3 and adjacent_subs:
+            candidates = _find_by_sub_area(adjacent_subs, types_to_search, 120, 3000)
             if len(candidates) >= 3:
-                logger.info("CMA: %d comps in adjacent neighbourhoods %s within 120 days",
-                            len(candidates), adjacent)
+                logger.info("CMA: %d comps in adjacent sub_areas within 120 days, 3km",
+                            len(candidates))
 
-        # Step 4: Fallback property types within same + adjacent neighbourhoods
+        # Step 4: Fallback types in same + adjacent sub_areas
         if len(candidates) < 3 and same_type and s_type:
             fallbacks = _TYPE_FALLBACKS.get(s_type, [])
-            if fallbacks:
+            if fallbacks and adjacent_subs:
                 all_types = [s_type] + fallbacks
-                try:
-                    hood_int = int(s_hood)
-                    adjacent = [str(h) for h in range(max(1, hood_int - 2), hood_int + 3)]
-                except ValueError:
-                    adjacent = [s_hood] if s_hood else []
-                candidates = _find_in_hoods(adjacent, all_types, 120)
-                logger.info("CMA: %d comps with fallback types %s in hoods %s",
-                            len(candidates), all_types, adjacent)
+                candidates = _find_by_sub_area(adjacent_subs, all_types, 120, 3000)
+                logger.info("CMA: %d comps with fallback types %s in adjacent sub_areas",
+                            len(candidates), all_types)
 
-        # Step 5: Last resort — same type city-wide within 5km, 120 days
+        # Step 5: Last resort — same type city-wide within 3km, 120 days
         if len(candidates) < 3:
-            logger.info("CMA: falling back to city-wide search within 5km")
+            logger.info("CMA: falling back to city-wide search within 3km")
             cutoff = datetime.now() - timedelta(days=120)
             m = sold["sold_dt"].notna() & (sold["sold_dt"] >= cutoff) & has_coords
             if types_to_search:
                 m &= sold["canonical_type"].isin(types_to_search)
             candidates = _compute_distances(sold[m])
-            candidates = candidates[candidates["distance_m"] <= 5000]
+            candidates = candidates[candidates["distance_m"] <= 3000]
 
         if candidates.empty:
             return []
