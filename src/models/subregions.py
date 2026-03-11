@@ -17,8 +17,12 @@ from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
+try:
+    from sklearn.cluster import KMeans
+    from sklearn.preprocessing import StandardScaler
+except ImportError:
+    KMeans = None  # type: ignore[assignment,misc]
+    StandardScaler = None  # type: ignore[assignment,misc]
 
 from src.features.feature_registry import PropertyType
 from src.pipeline.property_universe import VANCOUVER_LOCAL_AREAS
