@@ -401,7 +401,17 @@ class CMAEngine:
                 result["distance_m"] = 0.0
             return result
 
-        # Step 1: Same sub_area, ±10% value, 2km, 60 days
+        # ── Progressive search: only relax TIME and GEOGRAPHY, never value or type ──
+        # Hard rules that NEVER relax:
+        #   - Same property type (no fallback to detached for duplexes etc.)
+        #   - Assessed value within ±10% of subject
+        #   - Distance within 2km
+        #
+        # What CAN relax progressively:
+        #   - Time window: 60d → 120d → 180d → 365d
+        #   - Sub-area: same → adjacent → any within 2km
+
+        # Step 1: Same sub_area, ±10% value, 2km, default days
         if subject_subs:
             candidates = _search(subject_subs, types_to_search, max_age_days, 2000, 0.10)
             if len(candidates) >= 3:
@@ -422,28 +432,37 @@ class CMAEngine:
                 logger.info("CMA step 3: %d comps (adjacent subs, ±10%%, 120d)",
                             len(candidates))
 
-        # Step 4: Adjacent sub_areas, ±20% value, 2km, 120 days
+        # Step 4: Adjacent sub_areas, ±10% value, 2km, 180 days
         if len(candidates) < 3 and adjacent_subs:
-            candidates = _search(adjacent_subs, types_to_search, 120, 2000, 0.20)
+            candidates = _search(adjacent_subs, types_to_search, 180, 2000, 0.10)
             if len(candidates) >= 3:
-                logger.info("CMA step 4: %d comps (adjacent subs, ±20%%, 120d)",
+                logger.info("CMA step 4: %d comps (adjacent subs, ±10%%, 180d)",
                             len(candidates))
 
-        # Step 5: Fallback types, adjacent sub_areas, ±20% value, 2km
+        # Step 5: Any sub_area within 2km, ±10% value, 365 days
+        if len(candidates) < 3:
+            candidates = _search(set(), types_to_search, 365, 2000, 0.10)
+            if len(candidates) >= 3:
+                logger.info("CMA step 5: %d comps (any sub_area, ±10%%, 365d)",
+                            len(candidates))
+
+        # Step 6: Fallback types (e.g. duplex→detached), STILL ±10% value, 2km, 365d
+        # Only if same-type search found < 3 comps. Clearly labelled as fallback.
         if len(candidates) < 3 and same_type and s_type:
             fallbacks = _TYPE_FALLBACKS.get(s_type, [])
-            if fallbacks and adjacent_subs:
+            if fallbacks:
                 all_types = [s_type] + fallbacks
-                candidates = _search(adjacent_subs, all_types, 120, 2000, 0.20)
-                logger.info("CMA step 5: %d comps (fallback types, ±20%%)",
-                            len(candidates))
+                candidates = _search(
+                    adjacent_subs or subject_subs or set(),
+                    all_types, 365, 2000, 0.10,
+                )
+                if not candidates.empty:
+                    logger.info("CMA step 6: %d comps (fallback types, ±10%%, 365d)",
+                                len(candidates))
 
-        # Step 6: Last resort — relax value to ±30%, extend to 180 days
-        if len(candidates) < 3:
-            logger.info("CMA step 6: last resort (±30%%, 180d, 2km)")
-            candidates = _search(
-                adjacent_subs or subject_subs, types_to_search, 180, 2000, 0.30,
-            )
+        if len(candidates) < 3 and not candidates.empty:
+            logger.info("CMA: only %d comps found (strict ±10%%, 2km)",
+                        len(candidates))
 
         if candidates.empty:
             return []

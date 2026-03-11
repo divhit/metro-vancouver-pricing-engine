@@ -984,6 +984,15 @@ async def generate_cma(request: CMARequest) -> CMAResponse:
         addr_upper = re.sub(r"\bWEST\b", "W", addr_upper)
         addr_upper = re.sub(r"\bNORTH\b", "N", addr_upper)
         addr_upper = re.sub(r"\bSOUTH\b", "S", addr_upper)
+        # Normalize street suffixes to match BC Assessment format
+        addr_upper = re.sub(r"\bSTREET\b", "ST", addr_upper)
+        addr_upper = re.sub(r"\bAVENUE\b", "AVE", addr_upper)
+        addr_upper = re.sub(r"\bDRIVE\b", "DR", addr_upper)
+        addr_upper = re.sub(r"\bBOULEVARD\b", "BLVD", addr_upper)
+        addr_upper = re.sub(r"\bCRESCENT\b", "CRES", addr_upper)
+        addr_upper = re.sub(r"\bROAD\b", "RD", addr_upper)
+        addr_upper = re.sub(r"\bPLACE\b", "PL", addr_upper)
+        addr_upper = re.sub(r"\bCOURT\b", "CRT", addr_upper)
 
         m = re.match(r"^(\d+)\s+(.+)", addr_upper)
         if m:
