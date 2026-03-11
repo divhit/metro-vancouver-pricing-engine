@@ -994,6 +994,18 @@ async def generate_cma(request: CMARequest) -> CMAResponse:
         addr_upper = re.sub(r"\bPLACE\b", "PL", addr_upper)
         addr_upper = re.sub(r"\bCOURT\b", "CRT", addr_upper)
 
+        # Extract unit number from address patterns:
+        #   "#302", "Suite 302", "Unit 302", "Apt 302"
+        unit_num = None
+        unit_match = re.search(r"[#]\s*(\d+)", addr_upper)
+        if not unit_match:
+            unit_match = re.search(r"\b(?:SUITE|UNIT|APT|STE)\s*(\d+)", addr_upper)
+        if unit_match:
+            unit_num = int(unit_match.group(1))
+            # Remove unit part from address for street matching
+            addr_upper = addr_upper[:unit_match.start()].strip().rstrip(",").strip() + " " + addr_upper[unit_match.end():].strip()
+            addr_upper = addr_upper.strip()
+
         m = re.match(r"^(\d+)\s+(.+)", addr_upper)
         if m:
             civic_num = int(m.group(1))
@@ -1002,38 +1014,64 @@ async def generate_cma(request: CMARequest) -> CMAResponse:
                 civic_col = _properties_df["civic_number"].fillna(0).astype(int)
             else:
                 civic_col = _properties_df["from_civic_number"].fillna(0).astype(int)
-            # Also check to_civic_number for duplex/strata units
             to_civic_col = _properties_df["to_civic_number"].fillna(0).astype(int) if "to_civic_number" in _properties_df.columns else pd.Series(0, index=_properties_df.index)
-            civic_match = (civic_col == civic_num) | (to_civic_col == civic_num)
             street_col = _properties_df["street_name"].fillna("").str.upper()
 
-            # Try full street match first (e.g. "40TH AVE E")
-            mask = civic_match & (street_col == street_part)
-            if not mask.any():
-                # Try contains with all significant words
-                words = [w for w in street_part.split() if len(w) > 1]
-                mask = civic_match
-                for word in words:
-                    mask = mask & street_col.str.contains(re.escape(word), na=False)
-
-            if mask.any():
-                if mask.sum() == 1:
+            if unit_num is not None:
+                # Condo/strata unit: building number is in to_civic_number,
+                # unit number is in from_civic_number (BC Assessment format)
+                # e.g. "1858 W 5TH AVE #302" → to_civic=1858, from_civic=302
+                unit_mask = (to_civic_col == civic_num) & (civic_col == unit_num)
+                # Match street
+                street_match = street_col == street_part
+                if not street_match.any():
+                    words = [w for w in street_part.split() if len(w) > 1]
+                    street_match = pd.Series(True, index=_properties_df.index)
+                    for word in words:
+                        street_match = street_match & street_col.str.contains(re.escape(word), na=False)
+                mask = unit_mask & street_match
+                if mask.any():
                     property_row = _properties_df[mask].iloc[0]
-                else:
-                    # Multiple matches — prefer exact or closest match
-                    # If lat/lon also provided, pick nearest
-                    if request.latitude and request.longitude:
+
+            if property_row is None:
+                # Standard lookup: civic_number or to_civic_number matches
+                civic_match = (civic_col == civic_num) | (to_civic_col == civic_num)
+
+                # Try full street match first (e.g. "40TH AVE E")
+                mask = civic_match & (street_col == street_part)
+                if not mask.any():
+                    # Try contains with all significant words
+                    words = [w for w in street_part.split() if len(w) > 1]
+                    mask = civic_match
+                    for word in words:
+                        mask = mask & street_col.str.contains(re.escape(word), na=False)
+
+                if mask.any():
+                    if mask.sum() == 1:
+                        property_row = _properties_df[mask].iloc[0]
+                    else:
                         candidates = _properties_df[mask]
-                        if "latitude" in candidates.columns:
-                            dists = (
-                                (candidates["latitude"] - request.latitude) ** 2
-                                + (candidates["longitude"] - request.longitude) ** 2
-                            )
-                            property_row = candidates.loc[dists.idxmin()]
+                        # Multiple matches at same address
+                        if request.latitude and request.longitude:
+                            # If lat/lon provided, pick nearest
+                            if "latitude" in candidates.columns:
+                                dists = (
+                                    (candidates["latitude"] - request.latitude) ** 2
+                                    + (candidates["longitude"] - request.longitude) ** 2
+                                )
+                                property_row = candidates.loc[dists.idxmin()]
+                            else:
+                                property_row = candidates.iloc[0]
+                        elif (candidates["property_type"] == "duplex").any():
+                            # For duplexes: multiple PIDs at same address means
+                            # old lot PID + new unit PIDs. Pick the newer PID
+                            # (higher PID number = the actual duplex unit, not
+                            # the original lot which retains full land value).
+                            duplex_cands = candidates[candidates["property_type"] == "duplex"]
+                            pid_numeric = pd.to_numeric(duplex_cands["pid"], errors="coerce").fillna(0)
+                            property_row = duplex_cands.loc[pid_numeric.idxmax()]
                         else:
                             property_row = candidates.iloc[0]
-                    else:
-                        property_row = _properties_df[mask].iloc[0]
     elif request.latitude and request.longitude:
         # Nearest property lookup
         if "latitude" in _properties_df.columns and "longitude" in _properties_df.columns:
