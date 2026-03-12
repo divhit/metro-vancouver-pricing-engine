@@ -91,6 +91,10 @@ export default function ValuationPage() {
   const [unitSuggestions, setUnitSuggestions] = useState<BuildingUnit[]>([]);
   const [showUnitDropdown, setShowUnitDropdown] = useState(false);
 
+  // Duplex: 2 units on one lot (not strata)
+  const [isDuplex, setIsDuplex] = useState(false);
+  const [duplexUnits, setDuplexUnits] = useState<BuildingUnit[]>([]);
+
   const debouncedPidQuery = useDebounce(pidQuery, 250);
 
   const runPrediction = useCallback(async (overrideReq?: Partial<PredictionRequest>) => {
@@ -217,6 +221,8 @@ export default function ValuationPage() {
         setBuildingUnits([]);
         setUnitInput("");
         setUnitSuggestions([]);
+        setIsDuplex(false);
+        setDuplexUnits([]);
 
         // Extract street number + full street from Google address and search our DB
         // e.g. "312 East 40th Avenue, Vancouver, BC, Canada" → search "312 40TH AVE E"
@@ -262,10 +268,25 @@ export default function ValuationPage() {
 
           // Check if this is a strata building with multiple units
           api.getBuildingUnits(parseInt(streetNum), normalizedStreet).then((units) => {
+            // Detect duplex: 2-3 PIDs where some have unit numbers (1 & 2)
+            // and types are NOT condo/townhome (BC Assessment lists duplexes as "detached")
+            const unitsWithNumber = units.filter((u) => u.unit_number !== null && u.unit_number !== undefined);
+            const hasCondoTypes = units.some((u) => u.property_type === "condo" || u.property_type === "townhome");
+            const isDuplexPattern = !hasCondoTypes && unitsWithNumber.length === 2 &&
+              unitsWithNumber.some((u) => u.unit_number === 1) &&
+              unitsWithNumber.some((u) => u.unit_number === 2);
+
             // Only treat as strata if units are condos/townhomes, NOT duplexes
-            const isStrata = units.length > 2 ||
-              (units.length > 1 && units.some((u) => u.property_type === "condo" || u.property_type === "townhome"));
-            if (isStrata) {
+            const isStrata = !isDuplexPattern && (units.length > 2 ||
+              (units.length > 1 && hasCondoTypes));
+
+            if (isDuplexPattern) {
+              // This is a duplex — show both units for the user to pick
+              setIsDuplex(true);
+              setDuplexUnits(unitsWithNumber);
+              setPropertyType("duplex");
+              // Don't auto-select — let the user choose which unit
+            } else if (isStrata) {
               // This is a strata building (condo/townhome)
               setIsStrataBuilding(true);
               setBuildingUnits(units);
@@ -291,8 +312,7 @@ export default function ValuationPage() {
               }
               // If no googleUnit, the UI will prompt the user
             } else if (units.length >= 1) {
-              // Not strata: either single property or duplex (2 PIDs, same lot)
-              // For duplexes: pick the newer PID (higher number = actual unit, not old lot)
+              // Single property on the lot
               const sorted = [...units].sort((a, b) =>
                 parseInt(b.pid) - parseInt(a.pid)
               );
@@ -414,6 +434,10 @@ export default function ValuationPage() {
     }
     if (mode === "address" && isStrataBuilding && !selectedMatch) {
       setError("This is a strata building — please enter a unit number above.");
+      return;
+    }
+    if (mode === "address" && isDuplex && !selectedMatch) {
+      setError("This is a duplex — please select a unit above.");
       return;
     }
     runPrediction();
@@ -600,6 +624,50 @@ export default function ValuationPage() {
                       </div>
                     )}
 
+                    {/* Duplex: show both units for selection */}
+                    {isDuplex && !selectedMatch && (
+                      <div className="p-3 rounded-lg border border-teal-200 bg-teal-50/50">
+                        <p className="text-xs font-medium text-teal-800 mb-2">
+                          This is a duplex with {duplexUnits.length} units — select yours:
+                        </p>
+                        <div className="space-y-1.5">
+                          {duplexUnits.map((u) => (
+                            <button
+                              key={u.pid}
+                              type="button"
+                              onClick={() => {
+                                setSelectedMatch({
+                                  pid: u.pid,
+                                  address: `${selectedAddress?.replace(/,.*$/, "")} — Unit ${u.unit_number}`,
+                                  property_type: "duplex",
+                                  neighbourhood: "",
+                                  assessed_value: u.assessed_value,
+                                });
+                                setPid(u.pid);
+                                setPropertyType("duplex");
+                              }}
+                              className="w-full text-left px-3 py-2 rounded-md border border-sand-200 bg-white hover:border-teal-300 hover:bg-teal-50/30 text-sand-700 text-xs transition"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <span className="font-medium">Unit {u.unit_number}</span>
+                                  <span className="ml-2 text-sand-400">PID: {u.pid}</span>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                  <span className="px-1.5 py-0.5 rounded bg-teal-50 border border-teal-200 text-[10px] font-medium uppercase">
+                                    Duplex
+                                  </span>
+                                  <span className="text-sand-500">
+                                    {formatCurrency(u.assessed_value)}
+                                  </span>
+                                </div>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Disambiguation: multiple properties at this address */}
                     {addressMatches.length > 1 && (
                       <div className="p-3 rounded-lg border border-amber-200 bg-amber-50/50">
@@ -685,6 +753,7 @@ export default function ValuationPage() {
               <option value="">Auto-detect</option>
               <option value="condo">Condo</option>
               <option value="townhome">Townhome</option>
+              <option value="duplex">Duplex</option>
               <option value="detached">Detached</option>
               <option value="development_land">Development Land</option>
             </select>
