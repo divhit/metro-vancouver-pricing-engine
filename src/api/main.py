@@ -153,21 +153,14 @@ async def lifespan(app: FastAPI):
                     dtype={"pid": str, "neighbourhood_code": str},
                     low_memory=True,
                 )
-                # Reduce memory: downcast numerics, categorize safe string columns.
-                # Do NOT categorize columns used in .fillna("") / .str operations
-                # (category dtype rejects values not in the category set).
+                # Reduce memory: categorize low-cardinality string columns.
+                # Do NOT downcast floats — float32 loses precision and causes
+                # wrong LightGBM predictions ($1.17M vs $814K for same property).
+                # Do NOT categorize columns used in .fillna("") / .str operations.
                 _NO_CATEGORY = {"full_address", "street_name", "pid", "land_coordinate"}
                 for col in _properties_df.columns:
                     dtype = _properties_df[col].dtype
-                    if dtype == "float64":
-                        _properties_df[col] = pd.to_numeric(
-                            _properties_df[col], downcast="float"
-                        )
-                    elif dtype == "int64":
-                        _properties_df[col] = pd.to_numeric(
-                            _properties_df[col], downcast="integer"
-                        )
-                    elif dtype == "object" and col not in _NO_CATEGORY:
+                    if dtype == "object" and col not in _NO_CATEGORY:
                         n_unique = _properties_df[col].nunique()
                         if n_unique < len(_properties_df) * 0.5:
                             _properties_df[col] = _properties_df[col].astype("category")
