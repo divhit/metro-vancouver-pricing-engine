@@ -219,9 +219,9 @@ async def lifespan(app: FastAPI):
             # 2+ "detached" PIDs sharing the same (to_civic_number, street).
             # BC Assessment still classifies them as "detached", but for
             # CMA and valuation they should be "duplex".
-            # Skip in LITE_MODE to avoid memory-intensive groupby.
+            # Runs in all modes — the groupby is lightweight.
             # ----------------------------------------------------------
-            if "to_civic_number" in _properties_df.columns and not _LITE_MODE:
+            if "to_civic_number" in _properties_df.columns:
                 _to_civic = _properties_df["to_civic_number"].fillna(0).astype(int)
                 _street = _properties_df["street_name"].fillna("").str.upper().str.strip()
                 _properties_df["_lot_key"] = _to_civic.astype(str) + "|" + _street
