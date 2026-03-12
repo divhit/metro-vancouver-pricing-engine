@@ -97,11 +97,23 @@ _LITE_MODE = os.environ.get("LITE_MODE", "false").lower() == "true"
 # Columns loaded in LITE_MODE (essential for lookups + basic ML features).
 # LightGBM handles missing features as NaN natively.
 _LITE_COLUMNS = [
+    # API endpoint columns
     "pid", "full_address", "street_name", "from_civic_number", "to_civic_number",
     "latitude", "longitude", "property_type", "zoning_district",
     "neighbourhood_code", "total_assessed_value", "current_land_value",
     "current_improvement_value", "year_built", "tax_assessment_year",
     "legal_type", "estimated_living_area_sqft",
+    # Model input features (pre-computed spatial/census/transit)
+    "building_footprint_sqm", "census_median_income", "census_pct_immigrants",
+    "census_pct_owner_occupied", "census_pct_university", "census_pop_density",
+    "contaminated_sites_500m", "dist_downtown_m", "dist_nearest_park_m",
+    "dist_nearest_skytrain_m", "dist_nearest_transit_m", "dist_waterfront_m",
+    "effective_age", "estimated_stories",
+    "has_skytrain_800m", "in_alr", "in_floodplain", "is_tod_area",
+    "living_area_confidence", "parks_within_500m",
+    "str_avg_price_500m", "str_count_500m", "str_density_per_km2",
+    "transit_stops_400m", "transit_stops_800m", "unique_routes_400m",
+    "land_coordinate", "previous_land_value", "previous_improvement_value",
 ]
 
 
