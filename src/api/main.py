@@ -101,13 +101,7 @@ _LITE_COLUMNS = [
     "latitude", "longitude", "property_type", "zoning_district",
     "neighbourhood_code", "total_assessed_value", "current_land_value",
     "current_improvement_value", "year_built", "tax_assessment_year",
-    "legal_type", "effective_age", "land_coordinate",
-    # Key ML features
-    "land_to_total_ratio", "log_total_value", "log_land_value",
-    "is_strata", "lot_size_sqft", "estimated_living_area_sqft",
-    "dist_nearest_skytrain_m", "dist_downtown_km",
-    "school_score_1km", "transit_score_1km",
-    "median_neighbourhood_value", "neighbourhood_density",
+    "legal_type", "estimated_living_area_sqft",
 ]
 
 
@@ -142,9 +136,25 @@ async def lifespan(app: FastAPI):
                 _all_cols = set(_pq.read_schema(enriched_path).names)
                 _load_cols = [c for c in _LITE_COLUMNS if c in _all_cols]
                 _properties_df = pd.read_parquet(enriched_path, columns=_load_cols)
+                # Aggressively reduce memory: downcast numerics, categorize strings
+                for col in _properties_df.columns:
+                    dtype = _properties_df[col].dtype
+                    if dtype == "float64":
+                        _properties_df[col] = pd.to_numeric(
+                            _properties_df[col], downcast="float"
+                        )
+                    elif dtype == "int64":
+                        _properties_df[col] = pd.to_numeric(
+                            _properties_df[col], downcast="integer"
+                        )
+                    elif dtype == "object":
+                        n_unique = _properties_df[col].nunique()
+                        if n_unique < len(_properties_df) * 0.5:
+                            _properties_df[col] = _properties_df[col].astype("category")
                 logger.info(
-                    "LITE_MODE: loaded %d/%d columns",
+                    "LITE_MODE: loaded %d/%d columns (%.1f MB)",
                     len(_load_cols), len(_all_cols),
+                    _properties_df.memory_usage(deep=True).sum() / 1024 / 1024,
                 )
             else:
                 _properties_df = pd.read_parquet(enriched_path)
@@ -405,8 +415,10 @@ async def lifespan(app: FastAPI):
                     )
 
             # Recompute effective_age after year_built propagation
+            # Skip in LITE_MODE — effective_age not in column list
             if (
-                "year_built" in _properties_df.columns
+                not _LITE_MODE
+                and "year_built" in _properties_df.columns
                 and "tax_assessment_year" in _properties_df.columns
             ):
                 yb = _properties_df["year_built"]
@@ -419,10 +431,19 @@ async def lifespan(app: FastAPI):
             import gc
             gc.collect()
 
+            # Log memory usage
+            try:
+                import resource
+                rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024 / 1024
+                logger.info("RSS memory after loading: %.0f MB", rss_mb)
+            except Exception:
+                pass
+
             logger.info(
-                "Loaded enriched properties: %d rows, %d columns from %s",
+                "Loaded enriched properties: %d rows, %d columns (%.1f MB) from %s",
                 len(_properties_df),
                 len(_properties_df.columns),
+                _properties_df.memory_usage(deep=True).sum() / 1024 / 1024,
                 enriched_path,
             )
         except Exception as exc:

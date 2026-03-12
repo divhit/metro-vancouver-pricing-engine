@@ -20,7 +20,7 @@ RUN curl -L -o /tmp/data-api.tar.gz https://github.com/divhit/metro-vancouver-pr
     && rm /tmp/data-api.tar.gz
 
 ENV LITE_MODE=true
-ENV MAX_CACHED_MODELS=3
+ENV MAX_CACHED_MODELS=1
 
 EXPOSE 8000
 
