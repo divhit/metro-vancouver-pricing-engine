@@ -153,7 +153,10 @@ async def lifespan(app: FastAPI):
                     dtype={"pid": str, "neighbourhood_code": str},
                     low_memory=True,
                 )
-                # Aggressively reduce memory: downcast numerics, categorize strings
+                # Reduce memory: downcast numerics, categorize safe string columns.
+                # Do NOT categorize columns used in .fillna("") / .str operations
+                # (category dtype rejects values not in the category set).
+                _NO_CATEGORY = {"full_address", "street_name", "pid", "land_coordinate"}
                 for col in _properties_df.columns:
                     dtype = _properties_df[col].dtype
                     if dtype == "float64":
@@ -164,7 +167,7 @@ async def lifespan(app: FastAPI):
                         _properties_df[col] = pd.to_numeric(
                             _properties_df[col], downcast="integer"
                         )
-                    elif dtype == "object":
+                    elif dtype == "object" and col not in _NO_CATEGORY:
                         n_unique = _properties_df[col].nunique()
                         if n_unique < len(_properties_df) * 0.5:
                             _properties_df[col] = _properties_df[col].astype("category")
