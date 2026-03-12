@@ -127,15 +127,20 @@ async def lifespan(app: FastAPI):
     )
 
     # Load enriched property data
+    # In LITE_MODE, prefer CSV (converted from parquet at Docker build time)
+    # to avoid loading pyarrow at runtime (~100-150MB savings).
+    enriched_csv = Path(_DATA_DIR) / "processed" / "enriched_properties.csv"
     enriched_path = Path(_DATA_DIR) / "processed" / "enriched_properties.parquet"
-    if enriched_path.exists():
+    data_path = enriched_csv if _LITE_MODE and enriched_csv.exists() else enriched_path
+    if data_path.exists():
         try:
-            if _LITE_MODE:
-                # Load only essential columns to save memory
-                import pyarrow.parquet as _pq
-                _all_cols = set(_pq.read_schema(enriched_path).names)
-                _load_cols = [c for c in _LITE_COLUMNS if c in _all_cols]
-                _properties_df = pd.read_parquet(enriched_path, columns=_load_cols)
+            if _LITE_MODE and data_path.suffix == ".csv":
+                _properties_df = pd.read_csv(
+                    data_path,
+                    usecols=lambda c: c in _LITE_COLUMNS,
+                    dtype={"pid": str, "neighbourhood_code": str},
+                    low_memory=True,
+                )
                 # Aggressively reduce memory: downcast numerics, categorize strings
                 for col in _properties_df.columns:
                     dtype = _properties_df[col].dtype
@@ -152,10 +157,17 @@ async def lifespan(app: FastAPI):
                         if n_unique < len(_properties_df) * 0.5:
                             _properties_df[col] = _properties_df[col].astype("category")
                 logger.info(
-                    "LITE_MODE: loaded %d/%d columns (%.1f MB)",
-                    len(_load_cols), len(_all_cols),
+                    "LITE_MODE: loaded %d columns from CSV (%.1f MB, no pyarrow)",
+                    len(_properties_df.columns),
                     _properties_df.memory_usage(deep=True).sum() / 1024 / 1024,
                 )
+            elif _LITE_MODE:
+                # Fallback: parquet with column subset
+                import pyarrow.parquet as _pq
+                _all_cols = set(_pq.read_schema(data_path).names)
+                _load_cols = [c for c in _LITE_COLUMNS if c in _all_cols]
+                _properties_df = pd.read_parquet(data_path, columns=_load_cols)
+                logger.info("LITE_MODE: loaded %d columns from parquet", len(_load_cols))
             else:
                 _properties_df = pd.read_parquet(enriched_path)
             # Compute unified civic_number if not already present.
