@@ -6,10 +6,9 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 curl && rm -rf /var/lib/apt/lists/*
 
-# Install Python deps — no pyarrow (we use CSV not parquet at runtime)
+# Install Python deps
 COPY requirements-api.txt .
-RUN grep -v pyarrow requirements-api.txt > /tmp/req.txt && \
-    pip install --no-cache-dir -r /tmp/req.txt && rm /tmp/req.txt
+RUN pip install --no-cache-dir -r requirements-api.txt
 
 # Copy source code
 COPY src/ src/
@@ -19,13 +18,13 @@ RUN curl -L -o /tmp/models.tar.gz https://github.com/divhit/metro-vancouver-pric
     && tar xzf /tmp/models.tar.gz -C /app/ \
     && rm /tmp/models.tar.gz
 
-# Download lite CSV data (pre-converted from parquet, 17 columns only, ~7MB)
-RUN curl -L -o /tmp/data-api-lite.tar.gz https://github.com/divhit/metro-vancouver-pricing-engine/releases/download/v1.0-models/data-api-lite.tar.gz \
-    && tar xzf /tmp/data-api-lite.tar.gz -C /app/ \
-    && rm /tmp/data-api-lite.tar.gz
+# Download full data (parquet + SQLite DB for CMA)
+RUN curl -L -o /tmp/data-api.tar.gz https://github.com/divhit/metro-vancouver-pricing-engine/releases/download/v1.0-models/data-api.tar.gz \
+    && tar xzf /tmp/data-api.tar.gz -C /app/ \
+    && rm /tmp/data-api.tar.gz
 
-ENV LITE_MODE=true
-ENV MAX_CACHED_MODELS=1
+ENV LITE_MODE=false
+ENV MAX_CACHED_MODELS=5
 
 EXPOSE 8000
 
