@@ -189,8 +189,9 @@ async def lifespan(app: FastAPI):
             # 2+ "detached" PIDs sharing the same (to_civic_number, street).
             # BC Assessment still classifies them as "detached", but for
             # CMA and valuation they should be "duplex".
+            # Skip in LITE_MODE to avoid memory-intensive groupby.
             # ----------------------------------------------------------
-            if "to_civic_number" in _properties_df.columns:
+            if "to_civic_number" in _properties_df.columns and not _LITE_MODE:
                 _to_civic = _properties_df["to_civic_number"].fillna(0).astype(int)
                 _street = _properties_df["street_name"].fillna("").str.upper().str.strip()
                 _properties_df["_lot_key"] = _to_civic.astype(str) + "|" + _street
@@ -214,8 +215,9 @@ async def lifespan(app: FastAPI):
             # Strata PIDs often have NaN year_built because BC Assessment
             # creates new PIDs without carrying over the parent lot's data.
             # Fix by looking up same (civic_number, street_name) properties.
+            # Skip in LITE_MODE to avoid .copy() memory spike.
             # ----------------------------------------------------------
-            if "year_built" in _properties_df.columns and "street_name" in _properties_df.columns:
+            if "year_built" in _properties_df.columns and "street_name" in _properties_df.columns and not _LITE_MODE:
                 # Skip duplexes — they are new construction on demolished lots,
                 # so the old lot's year_built would be wrong (the old house, not the new duplex)
                 missing_yb = _properties_df["year_built"].isna() & (_properties_df["property_type"] != "duplex")
@@ -413,6 +415,10 @@ async def lifespan(app: FastAPI):
                     yb.notna(), tay - yb, np.nan
                 )
 
+            # Free temporary memory from startup processing
+            import gc
+            gc.collect()
+
             logger.info(
                 "Loaded enriched properties: %d rows, %d columns from %s",
                 len(_properties_df),
@@ -476,7 +482,7 @@ async def lifespan(app: FastAPI):
     # ----------------------------------------------------------
     global _trends_summary
     raw_csv_path = Path(_DATA_DIR) / "raw" / "property_tax_all.csv"
-    if raw_csv_path.exists() and _properties_df is not None and not _properties_df.empty:
+    if raw_csv_path.exists() and _properties_df is not None and not _properties_df.empty and not _LITE_MODE:
         try:
             logger.info("Loading raw property tax CSV for multi-year trends...")
             raw = pd.read_csv(
@@ -773,7 +779,7 @@ async def get_market_trends(
     if _properties_df is None or _properties_df.empty:
         return []
 
-    df = _properties_df.copy()
+    df = _properties_df
     if property_type and property_type != "all" and "property_type" in df.columns:
         df = df[df["property_type"] == property_type]
 
