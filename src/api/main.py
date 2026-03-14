@@ -1431,6 +1431,10 @@ def _compute_market_summary(area_code: str) -> Optional[MarketSummary]:
     if "property_type" in hood_df.columns:
         for ptype, group in hood_df.groupby("property_type", observed=True):
             ptype_str = str(ptype)
+            # Skip property types with very few properties — likely
+            # misclassifications that produce misleading medians.
+            if len(group) < 10:
+                continue
             property_counts[ptype_str] = len(group)
 
             if "total_assessed_value" in group.columns:
