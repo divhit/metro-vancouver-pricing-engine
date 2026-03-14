@@ -14,6 +14,9 @@ RUN grep -v pyarrow requirements-api.txt > /tmp/req.txt && \
 # Copy source code
 COPY src/ src/
 
+# Copy pre-computed trends data (15KB — correct multi-year medians)
+COPY data/processed/trends_precomputed.csv data/processed/trends_precomputed.csv
+
 # Download models
 RUN curl -L -o /tmp/models.tar.gz https://github.com/divhit/metro-vancouver-pricing-engine/releases/download/v1.0-models/models.tar.gz \
     && tar xzf /tmp/models.tar.gz -C /app/ \
