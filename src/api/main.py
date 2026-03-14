@@ -523,7 +523,7 @@ async def lifespan(app: FastAPI):
     # ----------------------------------------------------------
     global _trends_summary
     raw_csv_path = Path(_DATA_DIR) / "raw" / "property_tax_all.csv"
-    if raw_csv_path.exists() and _properties_df is not None and not _properties_df.empty and not _LITE_MODE:
+    if raw_csv_path.exists() and _properties_df is not None and not _properties_df.empty:
         try:
             logger.info("Loading raw property tax CSV for multi-year trends...")
             raw = pd.read_csv(
@@ -577,8 +577,27 @@ async def lifespan(app: FastAPI):
             logger.warning("Failed to load raw CSV for trends: %s", trends_exc)
             _trends_summary = None
     else:
-        if not raw_csv_path.exists():
-            logger.info("Raw property tax CSV not found at %s; trends will use enriched data", raw_csv_path)
+        # Try pre-computed trends CSV (tiny ~16KB file, safe to commit)
+        precomputed_path = Path(_DATA_DIR) / "processed" / "trends_precomputed.csv"
+        if precomputed_path.exists():
+            try:
+                pre = pd.read_csv(precomputed_path)
+                # Expand precomputed medians into a format the trends endpoint can use.
+                # The precomputed file has: neighbourhood_code, tax_assessment_year,
+                # property_type, median, count — already aggregated.
+                _trends_summary = pre.rename(columns={"median": "total_assessed_value"})
+                # Mark it so the trends endpoint knows it's pre-aggregated
+                _trends_summary["_precomputed"] = True
+                logger.info(
+                    "Loaded precomputed trends: %d rows across years %s",
+                    len(_trends_summary),
+                    sorted(_trends_summary["tax_assessment_year"].dropna().unique().astype(int)),
+                )
+            except Exception as pre_exc:
+                logger.warning("Failed to load precomputed trends: %s", pre_exc)
+        else:
+            if not raw_csv_path.exists():
+                logger.info("No trends data found (neither raw CSV nor precomputed); trends will use enriched data")
 
     logger.info("API startup complete")
 
@@ -777,34 +796,52 @@ async def get_market_trends(
     to compute median assessed values per neighbourhood per year.
     Falls back to enriched parquet if raw CSV was not loaded.
     """
-    # Use pre-computed trends from raw CSV if available
+    # Use pre-computed trends from raw CSV (or precomputed CSV) if available
     if _trends_summary is not None and not _trends_summary.empty:
         df = _trends_summary.copy()
+        is_precomputed = "_precomputed" in df.columns
 
         if property_type and property_type != "all":
             df = df[df["property_type"] == property_type]
+        elif is_precomputed:
+            # For precomputed data, use the "all" rows when no type filter
+            df = df[df["property_type"] == "all"]
 
         if df.empty:
             return []
 
         results = []
         for code in sorted(NEIGHBOURHOOD_CODE_NAMES.keys()):
-            hood = df[df["neighbourhood_code"] == code]
+            hood = df[df["neighbourhood_code"].astype(str) == str(code)]
             if hood.empty:
                 continue
 
-            agg = hood.groupby("tax_assessment_year")["total_assessed_value"].agg(
-                ["median", "count"]
-            )
-            trends = [
-                {
-                    "year": int(year),
-                    "median_value": round(float(row["median"]), 0),
-                    "count": int(row["count"]),
-                }
-                for year, row in agg.iterrows()
-                if row["count"] >= 20
-            ]
+            if is_precomputed:
+                # Data is already aggregated: one row per neighbourhood/year
+                trends = [
+                    {
+                        "year": int(row["tax_assessment_year"]),
+                        "median_value": round(float(row["total_assessed_value"]), 0),
+                        "count": int(row["count"]),
+                    }
+                    for _, row in hood.iterrows()
+                    if row["count"] >= 20
+                ]
+            else:
+                # Raw data: need to compute median per year
+                agg = hood.groupby("tax_assessment_year")["total_assessed_value"].agg(
+                    ["median", "count"]
+                )
+                trends = [
+                    {
+                        "year": int(year),
+                        "median_value": round(float(row["median"]), 0),
+                        "count": int(row["count"]),
+                    }
+                    for year, row in agg.iterrows()
+                    if row["count"] >= 20
+                ]
+
             trends.sort(key=lambda t: t["year"])
 
             if len(trends) >= 2:
@@ -816,7 +853,10 @@ async def get_market_trends(
 
         return results
 
-    # Fallback: use enriched parquet (mostly 2026 data)
+    # Fallback: use enriched parquet (deduplicated — one row per PID).
+    # Since each PID only appears once (for its latest assessment year),
+    # historical year groupings produce misleading low-count medians.
+    # Only show the dominant year (usually 2026) to avoid garbage data.
     if _properties_df is None or _properties_df.empty:
         return []
 
@@ -827,6 +867,13 @@ async def get_market_trends(
     if df.empty:
         return []
 
+    # Find the dominant assessment year (the one with the most records)
+    dominant_year = None
+    if "tax_assessment_year" in df.columns:
+        year_counts = df["tax_assessment_year"].value_counts()
+        if not year_counts.empty:
+            dominant_year = int(year_counts.index[0])
+
     results = []
     for code in sorted(NEIGHBOURHOOD_CODE_NAMES.keys()):
         hood = df[df["neighbourhood_code"] == code]
@@ -834,20 +881,18 @@ async def get_market_trends(
             continue
 
         trends = []
-        if "tax_assessment_year" in hood.columns:
-            for year, group in hood.groupby("tax_assessment_year"):
-                yr = int(year)
-                median_val = float(group["total_assessed_value"].median())
-                count = len(group)
-                if count >= 20:
-                    trends.append({
-                        "year": yr,
-                        "median_value": round(median_val, 0),
-                        "count": count,
-                    })
+        if "tax_assessment_year" in hood.columns and dominant_year is not None:
+            # Only use the dominant year — other years have unreliable
+            # counts because the parquet has one row per PID, not per year.
+            group = hood[hood["tax_assessment_year"] == dominant_year]
+            if len(group) >= 20:
+                trends.append({
+                    "year": dominant_year,
+                    "median_value": round(float(group["total_assessed_value"].median()), 0),
+                    "count": len(group),
+                })
 
-        trends.sort(key=lambda t: t["year"])
-        if len(trends) >= 2:
+        if trends:
             results.append({
                 "neighbourhood_code": code,
                 "neighbourhood_name": NEIGHBOURHOOD_CODE_NAMES.get(code, code),

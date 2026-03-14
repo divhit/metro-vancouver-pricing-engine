@@ -35,6 +35,7 @@ config/data_sources.yaml
 # Data files (too large for git)
 data/raw/
 data/processed/
+!data/processed/trends_precomputed.csv
 data/external/
 *.csv
 *.parquet
