@@ -3,72 +3,72 @@
 export default function SettingsPage() {
   return (
     <div className="space-y-8">
-      <div>
+      <div className="border-b-2 border-concrete-900 pb-4">
         <h1
-          className="text-3xl text-sand-900 tracking-tight"
+          className="text-3xl sm:text-4xl text-concrete-900 tracking-[0.08em]"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          Settings
+          CONFIG
         </h1>
-        <p className="text-sand-500 text-sm mt-1">
-          Manage your account and preferences
+        <p className="text-concrete-500 text-[11px] mt-1 tracking-wider">
+          MANAGE ACCOUNT & PREFERENCES
         </p>
       </div>
 
-      <div className="card-hairline p-8 space-y-6">
+      <div className="card-hairline p-6 sm:p-8 space-y-6">
         <div>
-          <h2 className="text-sm font-semibold text-sand-800 mb-4">Account</h2>
-          <p className="text-sm text-sand-500">
+          <h2 className="text-[10px] font-bold text-concrete-900 mb-3 tracking-[0.2em]">ACCOUNT</h2>
+          <p className="text-[11px] text-concrete-500 tracking-wide leading-relaxed">
             Sign in with Clerk to manage your profile, security settings, and connected accounts.
-            Configure your Clerk publishable key in <code className="px-1.5 py-0.5 bg-sand-100 rounded text-xs">.env.local</code> to enable authentication.
+            Configure your Clerk publishable key in <code className="px-1.5 py-0.5 bg-concrete-100 border border-concrete-200 text-[10px] font-bold">.env.local</code> to enable authentication.
           </p>
         </div>
 
-        <hr className="border-sand-200" />
+        <hr className="border-concrete-900 border-t-2" />
 
         <div>
-          <h2 className="text-sm font-semibold text-sand-800 mb-4">API Configuration</h2>
+          <h2 className="text-[10px] font-bold text-concrete-900 mb-3 tracking-[0.2em]">API CONFIGURATION</h2>
           <div className="space-y-3">
-            <div className="flex items-center justify-between py-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between py-2 gap-2">
               <div>
-                <div className="text-sm text-sand-700">Backend API URL</div>
-                <div className="text-xs text-sand-400 mt-0.5">Where the pricing engine API is hosted</div>
+                <div className="text-[11px] text-concrete-700 font-bold tracking-wider">BACKEND API URL</div>
+                <div className="text-[10px] text-concrete-400 mt-0.5 tracking-wider">Where the pricing engine API is hosted</div>
               </div>
-              <code className="text-xs px-3 py-1.5 bg-sand-100 rounded-lg text-sand-600">
+              <code className="text-[10px] px-3 py-1.5 bg-concrete-100 border-2 border-concrete-900 text-concrete-600 font-bold break-all">
                 {process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}
               </code>
             </div>
-            <div className="flex items-center justify-between py-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between py-2 gap-2">
               <div>
-                <div className="text-sm text-sand-700">Clerk Authentication</div>
-                <div className="text-xs text-sand-400 mt-0.5">User authentication and session management</div>
+                <div className="text-[11px] text-concrete-700 font-bold tracking-wider">CLERK AUTHENTICATION</div>
+                <div className="text-[10px] text-concrete-400 mt-0.5 tracking-wider">User authentication and session management</div>
               </div>
-              <span className="text-xs px-2.5 py-1 rounded-full bg-amber-50 text-amber-600 border border-amber-200">
-                Not Configured
+              <span className="text-[10px] px-3 py-1 bg-signal text-white font-bold tracking-[0.15em]">
+                NOT CONFIGURED
               </span>
             </div>
           </div>
         </div>
 
-        <hr className="border-sand-200" />
+        <hr className="border-concrete-900 border-t-2" />
 
         <div>
-          <h2 className="text-sm font-semibold text-sand-800 mb-4">Setup Instructions</h2>
-          <ol className="space-y-2 text-sm text-sand-600">
-            <li className="flex gap-2">
-              <span className="text-teal-600 font-semibold">1.</span>
-              Create a Clerk account at <a href="https://clerk.com" target="_blank" className="text-teal-600 underline">clerk.com</a>
+          <h2 className="text-[10px] font-bold text-concrete-900 mb-3 tracking-[0.2em]">SETUP INSTRUCTIONS</h2>
+          <ol className="space-y-2 text-[11px] text-concrete-600 tracking-wide">
+            <li className="flex gap-3">
+              <span className="text-signal font-bold tracking-[0.2em]">01//</span>
+              Create a Clerk account at <a href="https://clerk.com" target="_blank" className="text-signal font-bold underline ml-1">clerk.com</a>
             </li>
-            <li className="flex gap-2">
-              <span className="text-teal-600 font-semibold">2.</span>
+            <li className="flex gap-3">
+              <span className="text-signal font-bold tracking-[0.2em]">02//</span>
               Copy your publishable key and secret key
             </li>
-            <li className="flex gap-2">
-              <span className="text-teal-600 font-semibold">3.</span>
-              Update <code className="px-1 py-0.5 bg-sand-100 rounded text-xs">.env.local</code> with your keys
+            <li className="flex gap-3">
+              <span className="text-signal font-bold tracking-[0.2em]">03//</span>
+              Update <code className="px-1 py-0.5 bg-concrete-100 border border-concrete-200 text-[10px] font-bold">.env.local</code> with your keys
             </li>
-            <li className="flex gap-2">
-              <span className="text-teal-600 font-semibold">4.</span>
+            <li className="flex gap-3">
+              <span className="text-signal font-bold tracking-[0.2em]">04//</span>
               Restart the development server
             </li>
           </ol>

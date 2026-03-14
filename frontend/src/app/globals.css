@@ -1,30 +1,27 @@
 @import "tailwindcss";
 
 @theme inline {
-  --color-sand-50: #faf9f7;
-  --color-sand-100: #f3f1ed;
-  --color-sand-200: #e8e4dd;
-  --color-sand-300: #d5cfc5;
-  --color-sand-400: #b8b0a2;
-  --color-sand-500: #9a9080;
-  --color-sand-600: #7d7365;
-  --color-sand-700: #5f574c;
-  --color-sand-800: #423d36;
-  --color-sand-900: #2a2621;
+  --color-concrete-50: #f5f4f0;
+  --color-concrete-100: #edece8;
+  --color-concrete-200: #dddbd5;
+  --color-concrete-300: #c4c1b8;
+  --color-concrete-400: #a09c91;
+  --color-concrete-500: #7a7568;
+  --color-concrete-600: #5c574c;
+  --color-concrete-700: #3d3a33;
+  --color-concrete-800: #1f1e1a;
+  --color-concrete-900: #0a0a0a;
 
-  --color-teal-50: #effefb;
-  --color-teal-100: #c7fef4;
-  --color-teal-200: #90fce9;
-  --color-teal-300: #51f1db;
-  --color-teal-400: #1ddec8;
-  --color-teal-500: #06c2ae;
-  --color-teal-600: #029d8e;
-  --color-teal-700: #077d73;
-  --color-teal-800: #0b635c;
-  --color-teal-900: #0e524d;
+  --color-signal: #FF3D00;
+  --color-signal-dark: #CC3100;
+  --color-signal-light: #FF6B3D;
+  --color-signal-bg: #FFF0EB;
 
-  --font-display: "Playfair Display", Georgia, serif;
-  --font-body: "DM Sans", system-ui, sans-serif;
+  --color-pos: #00802b;
+  --color-neg: #cc0000;
+
+  --font-display: "Bebas Neue", "Impact", sans-serif;
+  --font-body: "JetBrains Mono", "Courier New", monospace;
 }
 
 @layer base {
@@ -37,77 +34,65 @@
 
 body {
   font-family: var(--font-body);
-  background-color: var(--color-sand-50);
-  color: var(--color-sand-900);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--color-concrete-100);
+  color: var(--color-concrete-900);
+  -webkit-font-smoothing: auto;
+  font-feature-settings: "ss01", "ss02";
 }
 
-/* Dot grid background texture */
-.bg-dotgrid {
-  background-image: radial-gradient(
-    circle,
-    var(--color-sand-300) 0.5px,
-    transparent 0.5px
-  );
-  background-size: 24px 24px;
-}
-
-/* Subtle noise overlay */
-.noise-overlay::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.025;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
-  z-index: 50;
-}
-
-/* Hairline card */
+/* ===== BRUTALIST CARD ===== */
 .card-hairline {
   background: white;
-  border: 1px solid var(--color-sand-200);
-  border-radius: 12px;
+  border: 2px solid var(--color-concrete-900);
+  border-radius: 0;
+}
+.card-hairline:hover {
+  border-color: var(--color-signal);
 }
 
-/* Teal gradient text */
+/* ===== GRID BACKGROUND — exposed structure ===== */
+.bg-dotgrid {
+  background-image:
+    linear-gradient(var(--color-concrete-200) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-concrete-200) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* ===== ACCENT TEXT ===== */
 .text-gradient {
-  background: linear-gradient(135deg, var(--color-teal-600), var(--color-teal-800));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: var(--color-signal);
+  -webkit-text-fill-color: var(--color-signal);
 }
 
-/* Hero number styling */
+/* ===== HERO NUMBER ===== */
 .hero-number {
   font-family: var(--font-display);
-  font-size: 2.75rem;
+  font-size: 3.5rem;
   line-height: 1;
-  letter-spacing: -0.02em;
-  color: var(--color-sand-900);
+  letter-spacing: 0.02em;
+  color: var(--color-concrete-900);
 }
 
-/* Custom scrollbar */
+/* ===== SCROLLBAR — raw ===== */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--color-concrete-200);
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-sand-300);
-  border-radius: 3px;
+  background: var(--color-concrete-900);
+  border-radius: 0;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-sand-400);
+  background: var(--color-signal);
 }
 
-/* Page transition */
+/* ===== ANIMATIONS — snappy, not soft ===== */
 @keyframes fadeInUp {
   from {
     opacity: 0;
-    transform: translateY(12px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -115,68 +100,79 @@ body {
   }
 }
 .animate-fade-in-up {
-  animation: fadeInUp 0.5s ease-out forwards;
+  animation: fadeInUp 0.3s cubic-bezier(0, 0, 0.2, 1) forwards;
 }
 
-/* Stagger delays */
-.delay-1 { animation-delay: 0.05s; }
-.delay-2 { animation-delay: 0.1s; }
-.delay-3 { animation-delay: 0.15s; }
-.delay-4 { animation-delay: 0.2s; }
-.delay-5 { animation-delay: 0.25s; }
-.delay-6 { animation-delay: 0.3s; }
+.delay-1 { animation-delay: 0.03s; }
+.delay-2 { animation-delay: 0.06s; }
+.delay-3 { animation-delay: 0.09s; }
+.delay-4 { animation-delay: 0.12s; }
+.delay-5 { animation-delay: 0.15s; }
+.delay-6 { animation-delay: 0.18s; }
 
-/* Grade badge pulse */
+/* ===== PULSE ===== */
 @keyframes softPulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.7; }
+  50% { opacity: 0.4; }
 }
 .pulse-soft {
-  animation: softPulse 2.5s ease-in-out infinite;
+  animation: softPulse 1.5s step-end infinite;
 }
 
-/* Google Places Autocomplete dropdown styling */
+/* ===== GOOGLE PLACES — brutalist override ===== */
 .pac-container {
-  border: 1px solid var(--color-sand-200) !important;
-  border-radius: 12px !important;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08) !important;
-  margin-top: 4px !important;
+  border: 2px solid var(--color-concrete-900) !important;
+  border-radius: 0 !important;
+  box-shadow: 4px 4px 0 var(--color-concrete-900) !important;
+  margin-top: 2px !important;
   font-family: var(--font-body) !important;
   background: white !important;
   z-index: 9999 !important;
   overflow: hidden !important;
 }
 .pac-container::after {
-  display: none !important; /* Hide "Powered by Google" bar */
+  display: none !important;
 }
 .pac-item {
   padding: 10px 16px !important;
-  border-top: 1px solid var(--color-sand-100) !important;
+  border-top: 1px solid var(--color-concrete-200) !important;
   cursor: pointer !important;
-  font-size: 14px !important;
+  font-size: 12px !important;
   line-height: 1.5 !important;
-  color: var(--color-sand-800) !important;
+  color: var(--color-concrete-900) !important;
+  font-family: var(--font-body) !important;
 }
 .pac-item:first-child {
   border-top: none !important;
 }
 .pac-item:hover,
 .pac-item-selected {
-  background-color: var(--color-teal-50) !important;
+  background-color: var(--color-signal-bg) !important;
 }
 .pac-item-query {
-  font-size: 14px !important;
-  color: var(--color-sand-900) !important;
-  font-weight: 500 !important;
+  font-size: 12px !important;
+  color: var(--color-concrete-900) !important;
+  font-weight: 700 !important;
 }
 .pac-matched {
-  font-weight: 600 !important;
-  color: var(--color-teal-700) !important;
+  font-weight: 700 !important;
+  color: var(--color-signal) !important;
 }
 .pac-icon {
-  display: none !important; /* Remove Google's default pin icons */
+  display: none !important;
 }
-/* Prevent Google from adding inline width to input */
 .google-pac-input {
   box-sizing: border-box !important;
+}
+
+/* ===== NOISE OVERLAY — heavier grain ===== */
+.noise-overlay::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  z-index: 50;
+  mix-blend-mode: multiply;
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import dynamic from "next/dynamic";
@@ -12,108 +13,127 @@ const ClerkUserButton = hasClerk
   : null;
 
 const NAV_ITEMS = [
-  {
-    href: "/dashboard",
-    label: "Dashboard",
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="2" y="2" width="7" height="8" rx="1.5" />
-        <rect x="11" y="2" width="7" height="5" rx="1.5" />
-        <rect x="2" y="12" width="7" height="6" rx="1.5" />
-        <rect x="11" y="9" width="7" height="9" rx="1.5" />
-      </svg>
-    ),
-  },
-  {
-    href: "/valuation",
-    label: "Valuation",
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M10 2L3 7v10a1 1 0 001 1h4v-5a2 2 0 014 0v5h4a1 1 0 001-1V7l-7-5z" />
-      </svg>
-    ),
-  },
-  {
-    href: "/market",
-    label: "Market",
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <polyline points="2 16 6 10 10 13 14 6 18 9" />
-        <line x1="2" y1="18" x2="18" y2="18" />
-      </svg>
-    ),
-  },
-  {
-    href: "/settings",
-    label: "Settings",
-    icon: (
-      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="10" cy="10" r="3" />
-        <path d="M10 1.5v2M10 16.5v2M3.7 3.7l1.4 1.4M14.9 14.9l1.4 1.4M1.5 10h2M16.5 10h2M3.7 16.3l1.4-1.4M14.9 5.1l1.4-1.4" />
-      </svg>
-    ),
-  },
+  { href: "/dashboard", label: "DASH", num: "01" },
+  { href: "/valuation", label: "VALUE", num: "02" },
+  { href: "/market", label: "MARKET", num: "03" },
+  { href: "/settings", label: "CONFIG", num: "04" },
 ];
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => { setOpen(false); }, [pathname]);
+
+  useEffect(() => {
+    if (open) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    return () => { document.body.style.overflow = ""; };
+  }, [open]);
 
   return (
-    <aside className="fixed left-0 top-0 bottom-0 w-[220px] bg-white border-r border-sand-200 flex flex-col z-40">
-      {/* Logo */}
-      <div className="px-6 py-6 border-b border-sand-200">
-        <Link href="/dashboard" className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-teal-500 to-teal-700 flex items-center justify-center">
-            <span className="text-white font-semibold text-sm" style={{ fontFamily: "var(--font-display)" }}>V</span>
-          </div>
+    <>
+      {/* Mobile top bar */}
+      <div className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-concrete-900 flex items-center justify-between px-4 py-3">
+        <Link href="/dashboard" className="flex items-center gap-3">
           <span
-            className="text-xl tracking-tight text-sand-900"
+            className="text-2xl text-white tracking-widest"
             style={{ fontFamily: "var(--font-display)" }}
           >
-            Valuo
+            VALUO
           </span>
+          <span className="text-[9px] text-signal font-bold tracking-widest">// PROPERTY INTEL</span>
         </Link>
+        <button
+          onClick={() => setOpen(!open)}
+          className="p-2 text-white hover:text-signal transition-colors"
+          aria-label="Toggle menu"
+        >
+          {open ? (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="square">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          ) : (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="square">
+              <path d="M4 7h16M4 12h12M4 17h16" />
+            </svg>
+          )}
+        </button>
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 px-3 py-4 space-y-0.5">
-        {NAV_ITEMS.map((item) => {
-          const isActive = pathname.startsWith(item.href);
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all duration-200 ${
-                isActive
-                  ? "bg-teal-50 text-teal-700 border border-teal-200/60"
-                  : "text-sand-500 hover:text-sand-800 hover:bg-sand-100"
-              }`}
+      {/* Mobile overlay */}
+      {open && (
+        <div
+          className="lg:hidden fixed inset-0 bg-black/60 z-40"
+          onClick={() => setOpen(false)}
+        />
+      )}
+
+      {/* Sidebar */}
+      <aside
+        className={`fixed left-0 top-0 bottom-0 w-[220px] bg-concrete-900 border-r-2 border-signal flex flex-col z-50 transition-transform duration-200 ${
+          open ? "translate-x-0" : "-translate-x-full"
+        } lg:translate-x-0`}
+      >
+        {/* Logo */}
+        <div className="px-5 py-6 border-b border-concrete-700">
+          <Link href="/dashboard" className="block">
+            <div
+              className="text-3xl text-white tracking-[0.2em]"
+              style={{ fontFamily: "var(--font-display)" }}
             >
-              <span className={isActive ? "text-teal-600" : "text-sand-400"}>
-                {item.icon}
-              </span>
-              {item.label}
-            </Link>
-          );
-        })}
-      </nav>
-
-      {/* User */}
-      <div className="px-4 py-4 border-t border-sand-200 flex items-center gap-3">
-        {ClerkUserButton ? (
-          <>
-            <ClerkUserButton />
-            <span className="text-xs text-sand-500 truncate">Account</span>
-          </>
-        ) : (
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-full bg-teal-100 flex items-center justify-center text-teal-700 text-xs font-semibold">
-              A
+              VALUO
             </div>
-            <span className="text-xs text-sand-500">Aparna</span>
-          </div>
-        )}
-      </div>
-    </aside>
+            <div className="text-[9px] text-signal font-bold tracking-[0.3em] mt-0.5">
+              // PROPERTY INTEL
+            </div>
+          </Link>
+        </div>
+
+        {/* Navigation */}
+        <nav className="flex-1 py-2">
+          {NAV_ITEMS.map((item) => {
+            const isActive = pathname.startsWith(item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`flex items-center gap-3 px-5 py-3 text-[13px] font-bold tracking-[0.15em] transition-all duration-100 border-l-[3px] ${
+                  isActive
+                    ? "border-l-signal bg-signal/10 text-signal"
+                    : "border-l-transparent text-concrete-400 hover:text-white hover:bg-concrete-800"
+                }`}
+              >
+                <span className="text-[10px] text-concrete-500 w-5 tabular-nums">{item.num}</span>
+                {item.label}
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* Version / User */}
+        <div className="px-5 py-4 border-t border-concrete-700">
+          {ClerkUserButton ? (
+            <div className="flex items-center gap-3">
+              <ClerkUserButton />
+              <span className="text-[10px] text-concrete-500 tracking-wider">ACCOUNT</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <div className="w-7 h-7 bg-signal flex items-center justify-center text-white text-[11px] font-bold">
+                A
+              </div>
+              <div>
+                <div className="text-[11px] text-concrete-300 font-bold tracking-wider">APARNA</div>
+                <div className="text-[9px] text-concrete-500">v2.0 // prod</div>
+              </div>
+            </div>
+          )}
+        </div>
+      </aside>
+    </>
   );
 }
